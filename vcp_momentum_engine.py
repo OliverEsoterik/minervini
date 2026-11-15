@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import warnings
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
@@ -1138,8 +1139,28 @@ class Pipeline:
 # ===================================================================
 
 def main() -> None:
-    """Screen the full watchlist and print structured summaries."""
-    watchlist = [
+    """Screen tickers and print structured summaries.
+
+    Usage:
+        python3 vcp_momentum_engine.py              # full embedded watchlist
+        python3 vcp_momentum_engine.py AAPL MSFT COP  # specific tickers
+    """
+    raw_args = sys.argv[1:]
+    if raw_args:
+        # check help before upper-casing
+        if any(a in ("-h", "--help") for a in raw_args):
+            print("Usage: python3 vcp_momentum_engine.py [TICKER ...]")
+            print()
+            print("  Without arguments: screens the full embedded watchlist")
+            print("  With arguments:    screens only the given ticker(s)")
+            print()
+            print("  Examples:")
+            print("    python3 vcp_momentum_engine.py")
+            print("    python3 vcp_momentum_engine.py AAPL MSFT COP")
+            sys.exit(0)
+        watchlist = [t.upper() for t in raw_args]
+    else:
+        watchlist = [
         "A", "AAPL", "ABBV", "ABEV", "ABNB", "ABT", "ACN", "ADBE", "ADI",
         "ADM", "ADP", "ADSK", "AEE", "AEM", "AEP", "AER", "AFL", "AFRM",
         "AIG", "AJG", "ALAB", "ALC", "ALNY", "AMAT", "AMD", "AME", "AMGN",
