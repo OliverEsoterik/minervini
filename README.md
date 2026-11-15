@@ -24,7 +24,7 @@ This produces a ~1–3% approval rate on a broad watchlist — intentionally str
 
 | File | Purpose |
 |------|---------|
-| `vcp_momentum_engine.py` | Core module — all 5 modules + pipeline + CLI main() |
+| `vcp_momentum_engine.py` | Core module — all 5 modules + pipeline. CLI: `python3 vcp_momentum_engine.py [TICKERS...]` |
 | `batch_screen.py` | Parallel batch screening (8 workers) for the full watchlist |
 | `check_trend.py` | Quick HOLD/SELL check for open positions |
 | `INSTRUCTIONS.md` | Original specification |
@@ -51,13 +51,25 @@ python3 batch_screen.py
 
 Processes ~500 tickers in parallel across 8 workers (~5 minutes). Output: approved setups with entry prices, stop-losses, and share counts.
 
-### 2. Screen a subset with the core module
+### 2. Screen tickers via command line
 
 ```bash
+# Full embedded watchlist (~500 tickers)
 python3 vcp_momentum_engine.py
+
+# One or more specific tickers
+python3 vcp_momentum_engine.py AAPL MSFT COP ADI
+
+# Single ticker
+python3 vcp_momentum_engine.py SEZL
+
+# Usage info
+python3 vcp_momentum_engine.py --help
 ```
 
-Runs the same pipeline sequentially. Tickers are embedded in `main()`.
+Runs the full pipeline (Trend Template + Fundamental + VCP + Position Sizing) sequentially.
+With no arguments, screens the embedded watchlist.  With tickers on the command line,
+screens only those.
 
 ### 3. Check if open positions are still valid
 
@@ -142,6 +154,12 @@ The trend template is your primary sell signal. Run `check_trend.py` weekly on o
 ## Default watchlist
 
 The embedded watchlist covers ~500 tickers across sectors: FAANG, semiconductors, financials, healthcare, energy, consumer staples, industrials, and more. Edit the `watchlist` list in `vcp_momentum_engine.py` or `batch_screen.py` to customize.
+
+Pass tickers directly on the command line to screen a subset without editing files:
+
+```bash
+python3 vcp_momentum_engine.py ADI COP EXPD
+```
 
 ---
 
