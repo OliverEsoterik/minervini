@@ -10,14 +10,11 @@ RS Rank >= 70 is Minervini's minimum for superperformance candidates.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
