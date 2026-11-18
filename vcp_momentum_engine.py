@@ -490,7 +490,24 @@ class MinerviniFundamentalEngine:
         detail string.
         """
         # Single yfinance call for all quarterly line items
-        qf = yf.Ticker(ticker).quarterly_financials
+        try:
+            qf = yf.Ticker(ticker).quarterly_financials
+        except Exception as exc:
+            logger.warning(
+                "screen(%s) — quarterly financials fetch failed: %s", ticker, exc
+            )
+            return MinerviniFundamentalResult(
+                ticker=ticker,
+                eps_growth=MetricResult(label="EPS growth", passed=False, detail="yfinance error"),
+                eps_acceleration=MetricResult(label="EPS acceleration", passed=False, detail="yfinance error"),
+                revenue_growth=MetricResult(label="Revenue growth", passed=False, detail="yfinance error"),
+                revenue_acceleration=MetricResult(label="Revenue acceleration", passed=False, detail="yfinance error"),
+                profit_margin=MetricResult(label="Profit margin", passed=False, detail="yfinance error"),
+                score=0,
+                total_dims=0,
+                overall_passed=False,
+                details=f"Quarterly financials fetch failed for {ticker}: {exc}",
+           )
         rev_series = _extract_series(qf, "Total Revenue")
         ear_series = _extract_series(qf, "Net Income")
         if ear_series.empty:
