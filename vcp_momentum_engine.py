@@ -453,9 +453,6 @@ class MinerviniFundamentalResult:
         }
 
 
-# Deprecated — use MinerviniFundamentalResult instead
-FundamentalFilterResult = MinerviniFundamentalResult
-
 
 def _extract_series(df: pd.DataFrame | None, label: str) -> pd.Series:
     """Extract a single line-item row from a quarterly-financials DataFrame.
@@ -1067,7 +1064,7 @@ class CANSLIMProfile:
     """William O'Neil CAN SLIM qualitative assessment dataclass.
 
     Fields C, A are derived from quantitative checks (Trend Template,
-    FundamentalFilter).  N, S, L, I, M are populated from available
+    MinerviniFundamentalEngine).  N, S, L, I, M are populated from available
     metadata or left as ``None`` for the user to fill in.
     """
 
@@ -1181,7 +1178,7 @@ class RiskManager:
         self,
         ticker: str,
         trend_result: Optional[TrendTemplateResult] = None,
-        fundamental_result: Optional[FundamentalFilterResult] = None,
+        fundamental_result: Optional[MinerviniFundamentalResult] = None,
     ) -> CANSLIMProfile:
         """Assemble a CAN SLIM profile from available analysis results.
 
@@ -1203,7 +1200,7 @@ class RiskManager:
 
         # --- A: Earnings acceleration -------------------------------
         if fundamental_result is not None:
-            profile.A_earnings_acceleration = fundamental_result.accelerating
+            profile.A_earnings_acceleration = fundamental_result.eps_acceleration.passed
 
         # --- N, S, L, I, M from yfinance info -----------------------
         info = DataIngestion.fetch_info(ticker)
@@ -1243,7 +1240,7 @@ class ScreeningResult:
     error: Optional[str] = None
     ohlcv_data: Optional[OHLCVData] = None
     trend_template: Optional[TrendTemplateResult] = None
-    fundamental_filter: Optional[FundamentalFilterResult] = None
+    minervini_fundamental: Optional[MinerviniFundamentalResult] = None
     vcp: Optional[VCPResult] = None
     position_sizing: Optional[PositionSizingResult] = None
     canslim: Optional[CANSLIMProfile] = None
@@ -1274,15 +1271,8 @@ class ScreeningResult:
                     f"{self.trend_template.sma_200:.2f}"
                 ),
             }
-        if self.fundamental_filter:
-            d["fundamental_filter"] = {
-                "passed": self._to_native(self.fundamental_filter.passed),
-                "acceleration": (
-                    self._to_native(self.fundamental_filter.accelerating)
-                    if self.fundamental_filter.accelerating is not None
-                    else "insufficient data"
-                ),
-            }
+        if self.minervini_fundamental:
+            d["minervini_fundamental"] = self.minervini_fundamental.to_dict()
         if self.vcp:
             d["vcp"] = {
                 "detected": self._to_native(self.vcp.vcp_detected),
@@ -1329,7 +1319,7 @@ class Pipeline:
     ) -> None:
         self.ingestion = DataIngestion()
         self.trend = TrendTemplateValidator()
-        self.fundamental = FundamentalFilter()
+        self.fundamental = MinerviniFundamentalEngine(min_score=3)
         self.vcp = VCPEngine()
         self.risk = RiskManager(equity=equity, risk_pct=risk_pct)
 
@@ -1372,7 +1362,7 @@ class Pipeline:
 
         # ---- 3. Fundamental Filter ----------------------------------
         fundamental_result = self.fundamental.screen(ticker)
-        result.fundamental_filter = fundamental_result
+        result.minervini_fundamental = fundamental_result
 
         # ---- 4. VCP Engine ------------------------------------------
         vcp_result = self.vcp.analyse(data)
@@ -1397,15 +1387,13 @@ class Pipeline:
         # ---- Approval -----------------------------------------------
         tt_pass = trend_result.passed
         vcp_detect = vcp_result.vcp_detected
-        ff_pass = fundamental_result.passed
+        ff_pass = fundamental_result.overall_passed
 
         result.approved = tt_pass and vcp_detect and ff_pass
 
         logger.info(
             "Screen [%s]: approved=%s (TT=%s, FF=%s, VCP=%s)",
-            ticker, result.approved, tt_pass,
-            (ff_pass if fundamental_result.revenue_available else "fallback"),
-            vcp_detect,
+            ticker, result.approved, tt_pass, ff_pass, vcp_detect,
         )
         return result
 
