@@ -235,3 +235,59 @@ class RSModule:
             return p1
         else:
             return None
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def compute_percentile_ranks(
+        returns: Dict[str, Optional[float]],
+    ) -> Dict[str, float]:
+        """Rank weighted returns into percentiles 0-99.
+
+        The ticker with the highest return gets RS = 99.0
+        The ticker with the lowest return gets RS = 0.0
+        Ties share the same percentile.
+
+        Parameters
+        ----------
+        returns : Dict[str, Optional[float]]
+            ``{ticker: weighted_return_or_None}`` from ``fetch_returns()``.
+
+        Returns
+        -------
+        Dict[str, float]
+            ``{ticker: rs_rank}`` — only tickers with non-None returns.
+            Returns empty dict if fewer than MIN_TICKERS_FOR_RANKING (20)
+            valid returns — the ranking is unreliable below that threshold.
+        """
+        # Filter out None values (IPOs, failed fetches)
+        valid: Dict[str, float] = {
+            t: r for t, r in returns.items() if r is not None
+        }
+
+        if len(valid) < MIN_TICKERS_FOR_RANKING:
+            logger.warning(
+                "Only %d valid returns (need >= %d for reliable ranking). "
+                "Returning empty.",
+                len(valid),
+                MIN_TICKERS_FOR_RANKING,
+            )
+            return {}
+
+        # Sort by weighted return descending (best performer first)
+        sorted_tickers = sorted(valid.keys(), key=lambda t: valid[t], reverse=True)
+        n = len(sorted_tickers)
+
+        ranks: Dict[str, float] = {}
+        for i, ticker in enumerate(sorted_tickers):
+            # Percentile: top stock = 99, bottom = 0
+            # Formula: (N - rank_position) / N * 99
+            percentile = (n - i) / n * 99
+            ranks[ticker] = round(percentile, 1)
+
+        logger.info(
+            "RS ranking complete: %d tickers ranked (best=%.1f, worst=%.1f)",
+            len(ranks),
+            max(ranks.values()),
+            min(ranks.values()),
+        )
+        return ranks
