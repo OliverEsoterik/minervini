@@ -281,6 +281,8 @@ class TrendTemplateResult:
     sma_200: float
     sma_50_slope: float   # average daily change over last 20 days
     sma_200_slope: float
+    sma_150: Optional[float] = None     # 150-day SMA (current value)
+    sma_150_slope: Optional[float] = None  # slope of 150-day SMA
     details: str = ""
 
 
@@ -290,9 +292,15 @@ class TrendTemplateValidator:
     Rules
     -----
     1. Current closing price > 50-day SMA.
-    2. 50-day SMA > 200-day SMA.
-    3. Both the 50-day and 200-day SMAs are sloping *upward* over a
+    2. Current closing price > 150-day SMA.
+    3. 50-day SMA > 150-day SMA.
+    4. 150-day SMA > 200-day SMA.
+    5. Both the 50-day and 200-day SMAs are sloping *upward* over a
        lookback window of **TREND_SLOPE_WINDOW** trading days (~1 month).
+
+    This implements the full 3-step MA chain (50 > 150 > 200) per
+    Minervini's Trend Template, closing the gap where SMA-150 hasn't
+    crossed SMA-200 yet.
     """
 
     def __init__(self, slope_window: int = TREND_SLOPE_WINDOW) -> None:
@@ -311,14 +319,17 @@ class TrendTemplateValidator:
 
         # --- compute SMAs -------------------------------------------
         sma_50 = close.rolling(window=50, min_periods=50).mean()
+        sma_150 = close.rolling(window=150, min_periods=150).mean()
         sma_200 = close.rolling(window=200, min_periods=200).mean()
 
         latest_close = float(close.iloc[-1])
         latest_sma_50 = float(sma_50.iloc[-1])
+        latest_sma_150 = float(sma_150.iloc[-1]) if len(close) >= 150 else float('nan')
         latest_sma_200 = float(sma_200.iloc[-1])
 
         # --- slope over the last TREND_SLOPE_WINDOW days ------------
         slope_50 = self._slope(sma_50)
+        slope_150 = self._slope(sma_150) if len(close) >= 150 else 0.0
         slope_200 = self._slope(sma_200)
 
         # --- evaluate -----------------------------------------------
@@ -326,6 +337,18 @@ class TrendTemplateValidator:
             (
                 latest_close > latest_sma_50,
                 f"Close {latest_close:.2f} > SMA-50 {latest_sma_50:.2f}",
+            ),
+            (
+                latest_close > latest_sma_150 if not math.isnan(latest_sma_150) else False,
+                f"Close {latest_close:.2f} > SMA-150 {latest_sma_150:.2f}",
+            ),
+            (
+                latest_sma_50 > latest_sma_150 if not math.isnan(latest_sma_150) else False,
+                f"SMA-50 {latest_sma_50:.2f} > SMA-150 {latest_sma_150:.2f}",
+            ),
+            (
+                latest_sma_150 > latest_sma_200 if not math.isnan(latest_sma_150) else False,
+                f"SMA-150 {latest_sma_150:.2f} > SMA-200 {latest_sma_200:.2f}",
             ),
             (
                 latest_sma_50 > latest_sma_200,
@@ -356,8 +379,10 @@ class TrendTemplateValidator:
             passed=passed,
             current_close=latest_close,
             sma_50=latest_sma_50,
+            sma_150=latest_sma_150,
             sma_200=latest_sma_200,
             sma_50_slope=slope_50,
+            sma_150_slope=slope_150,
             sma_200_slope=slope_200,
             details=detail,
         )
