@@ -10,9 +10,11 @@ RS Rank >= 70 is Minervini's minimum for superperformance candidates.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -296,5 +298,130 @@ class RSModule:
             len(ranks),
             max(ranks.values()),
             min(ranks.values()),
+        )
+        return ranks
+
+    # ------------------------------------------------------------------
+    def _load_cache(self) -> Optional[Dict[str, float]]:
+        """Load cached RS ratings if the cache exists and is fresh enough.
+
+        Cache is valid if its ``fetched_at`` timestamp is less than
+        ``CACHE_TTL_HOURS`` (24) hours old.
+
+        Returns
+        -------
+        Optional[Dict[str, float]]
+            ``{ticker: rs_rank}`` if cache was fresh, None otherwise.
+        """
+        if not os.path.exists(self._cache_path):
+            return None
+
+        try:
+            with open(self._cache_path, "r") as f:
+                data = json.load(f)
+
+            fetched_at_str = data.get("fetched_at")
+            if not fetched_at_str:
+                return None
+
+            fetched_at = datetime.fromisoformat(fetched_at_str)
+            age = datetime.now() - fetched_at
+
+            if age.total_seconds() < CACHE_TTL_HOURS * 3600:
+                logger.info(
+                    "Using cached RS ratings (age: %.0f min)",
+                    age.total_seconds() / 60,
+                )
+                return data.get("ratings", {})
+            else:
+                logger.info(
+                    "Cache expired (age: %.0f hours)",
+                    age.total_seconds() / 3600,
+                )
+                return None
+
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as exc:
+            logger.warning("Cache load failed for %s: %s", self._cache_path, exc)
+            return None
+
+    # ------------------------------------------------------------------
+    def _save_cache(
+        self,
+        ratings: Dict[str, float],
+        scores: Dict[str, Optional[float]],
+    ) -> None:
+        """Save RS ratings and raw scores to a JSON cache file.
+
+        Parameters
+        ----------
+        ratings : Dict[str, float]
+            ``{ticker: rs_rank}``
+        scores : Dict[str, Optional[float]]
+            ``{ticker: weighted_return_or_None}`` — includes failures (None)
+            for diagnostics.
+        """
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Prepare scores for JSON (round floats, replace None with null)
+        clean_scores: Dict[str, Optional[float]] = {
+            k: (round(v, 6) if v is not None else None)
+            for k, v in scores.items()
+        }
+
+        data = {
+            "fetched_at": datetime.now().isoformat(),
+            "ratings": ratings,
+            "scores": clean_scores,
+        }
+
+        try:
+            with open(self._cache_path, "w") as f:
+                json.dump(data, f, indent=2)
+            logger.info("RS ratings cached to %s", self._cache_path)
+        except OSError as exc:
+            logger.error("Failed to write cache %s: %s", self._cache_path, exc)
+
+    # ------------------------------------------------------------------
+    def get_rs_ratings(
+        self,
+        tickers: List[str],
+        force_refresh: bool = False,
+    ) -> Dict[str, float]:
+        """Public entry point: fetch, rank, and return RS ratings.
+
+        1. Check cache (unless ``force_refresh=True``).
+        2. If cache miss or expired: download data, compute returns, rank.
+        3. Cache the result.
+        4. Return ``{ticker: rs_rank}``.
+
+        Parameters
+        ----------
+        tickers : List[str]
+            Ticker symbols to rank.
+        force_refresh : bool, optional
+            If True, bypass cache and re-download (default False).
+
+        Returns
+        -------
+        Dict[str, float]
+            ``{ticker: rs_rank}``.  May be empty if ranking failed.
+        """
+        if not force_refresh:
+            cached = self._load_cache()
+            if cached:
+                return cached
+
+        logger.info("Computing RS ratings for %d tickers...", len(tickers))
+        returns = self.fetch_returns(tickers)
+        ranks = self.compute_percentile_ranks(returns)
+
+        if ranks:
+            self._save_cache(ranks, returns)
+
+        valid_count = len(ranks)
+        logger.info(
+            "RS ratings ready: %d/%d tickers ranked",
+            valid_count,
+            len(tickers),
         )
         return ranks
