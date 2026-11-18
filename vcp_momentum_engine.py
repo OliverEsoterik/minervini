@@ -1131,11 +1131,61 @@ class VCPEngine:
         peaks_troughs = self._find_peaks_troughs(df)
         contractions = self._compute_contractions(peaks_troughs, df)
 
+        # --- 1b. Recency check — VCP must not have already resolved ------
+        # If the current price is ABOVE the last contraction's peak, the
+        # VCP has already broken out.  The setup is no longer active.
+        if contractions:
+            last_peak = float(contractions[-1]["peak"])
+            current_close = float(df["Close"].iloc[-1])
+            if current_close > last_peak:
+                logger.info(
+                    "VCP [%s]: resolved — current $%.2f > peak $%.2f",
+                    ticker, current_close, last_peak,
+                )
+                return VCPResult(
+                    ticker=ticker,
+                    vcp_detected=False,
+                    contractions=contractions,
+                    latest_consolidation_pct=contractions[-1]["range_pct"],
+                    atr_pct=self._atr_percent(df),
+                    volume_dryup=self._volume_dryup(df)[1],
+                    volume_ratio=self._volume_dryup(df)[0],
+                    details=f"VCP already resolved — price ${current_close:.2f} above peak ${last_peak:.2f}",
+                )
+
         # --- 2. ATR compression --------------------------------------
         atr_pct = self._atr_percent(df)
 
         # --- 3. Volume dry-up ----------------------------------------
         volume_ratio, dryup = self._volume_dryup(df)
+
+        # --- 3b. 52-week high proximity check for VCP -------------------
+        # A VCP must form near the 52-week high.  If the stock is more
+        # than 10%% below its 52-week high, the pattern is not a tight
+        # consolidation near new highs.
+        full_close = data.close
+        high_52 = float(full_close.max())
+        current_close = float(df["Close"].iloc[-1])
+        pct_off_high = (high_52 - current_close) / high_52 * 100
+        if pct_off_high > 10.0:
+            logger.info(
+                "VCP [%s]: %.1f%%%% below 52-week high $%.2f — no VCP",
+                ticker, pct_off_high, high_52,
+            )
+            detail = (
+                f"Price {pct_off_high:.1f}%% below 52-week high ${high_52:.2f} "
+                f"(VCP requires <= 10%%)"
+            )
+            return VCPResult(
+                ticker=ticker,
+                vcp_detected=False,
+                contractions=contractions,
+                latest_consolidation_pct=contractions[-1]["range_pct"] if contractions else None,
+                atr_pct=atr_pct,
+                volume_dryup=dryup,
+                volume_ratio=volume_ratio,
+                details=detail,
+            )
 
         # --- 4. VCP heuristic (last 4 contractions only) ----------
         # Older contractions represent historical swings, not the
@@ -1349,70 +1399,72 @@ class VCPEngine:
             2. Followed by tighter contractions of **8–12 %**.
             3. Culminating in a tight consolidation **< 8 %**.
 
-        We check for a declining trend in ANY consecutive subset of the
-        most recent contractions (at least 2), with the first contraction
-        in that subset >= 8%%.
+        Per Minervini, the LAST contraction must be the TIGHTEST.
+        We scan for a declining subset that ENDS at the most recent
+        contraction — older patterns that already resolved are not
+        current setups.
         """
         if len(contractions) < 2:
             return False, "Fewer than 2 contraction events."
 
         magnitudes = [c["range_pct"] for c in contractions]
 
-        # Scan all subsets of 2+ consecutive contractions from the
-        # most-recent end of the sequence.  A VCP can start anywhere
-        # in the 75-day window — earlier swings may be historical noise.
-        #
-        # For each subset we check:
-        #   1. First contraction >= 8% (meaningful initial pullback)
-        #   2. Last contraction < first * 0.85 (at least 15% tighter)
-        #   3. Last contraction < 10% (tight enough)
-        #
-        # If any subset satisfies all three, the VCP is valid.
+        # Scan subsets that END at the most recent contraction.
+        # A VCP requires the LAST swing to be the tightest — otherwise
+        # the pattern is expanding, not coiling.
+        # Earlier swings (older than the most recent) are historical
+        # and may represent patterns that have already resolved.
         found = False
         best_detail = "No VCP signal."
+        last_idx = len(magnitudes) - 1
 
-        for start in range(len(magnitudes)):
-            for end in range(start + 1, len(magnitudes)):
-                subset = magnitudes[start:end + 1]
-                if len(subset) < 2:
-                    continue
-                first = subset[0]
-                last = subset[-1]
+        for start in range(last_idx):
+            subset = magnitudes[start:last_idx + 1]
+            if len(subset) < 2:
+                continue
+            first = subset[0]
+            last = subset[-1]
 
-                # Meaningful initial pullback (>= 6% for tight VCP / bull flag)
-                if first < 6.0:
-                    continue
+            # Meaningful initial pullback (>= 6% for tight VCP / bull flag)
+            if first < 6.0:
+                continue
 
-                # Last must be at least 15%% tighter than first
-                if not (last < first * 0.85):
-                    continue
+            # Last must be at least 15%% tighter than first (declining)
+            if not (last < first * 0.85):
+                continue
 
-                # Last must be tight enough
-                if not (last < 10.0):
-                    continue
+            # Last must be tight enough (< 10%)
+            if not (last < 10.0):
+                continue
 
-                # All conditions met for this subset
-                ATR_CONDITION = ""
-                VOLUME_CONDITION = ""
+            parts = []
+            parts.append(f"contractions declining ({len(subset)} swings)")
+            parts.append(f"final consolidation {last:.1f}%% < 10%%")
+            if atr_pct < 4.0:
+                parts.append(f"ATR {atr_pct:.2f}%% < 4%%")
+            if volume_dryup:
+                parts.append("volume dry-up detected")
 
-                parts = []
-                parts.append(f"contractions declining ({len(subset)} swings)")
-                parts.append(f"final consolidation {last:.1f}%% < 10%%")
-                if atr_pct < 4.0:
-                    parts.append(f"ATR {atr_pct:.2f}%% < 4%%")
-                if volume_dryup:
-                    parts.append("volume dry-up detected")
-
-                found = True
-                best_detail = "; ".join(parts)
-                # Don't break — keep scanning for the best subset
-                # (later subsets with more contractions are preferred)
+            found = True
+            best_detail = "; ".join(parts)
+            # Prefer longer subsets (more contractions in the decline)
 
         if found:
             return True, best_detail
 
-        # If no declining subset found, return the reason for the
-        # one with the largest first pullback (most likely VCP candidate)
+        # Fallback: tight pivot check
+        # Minervini also enters on tight consolidations near the 52-week
+        # high that don't have the classic multi-contraction VCP shape.
+        # Criteria: meaningful but mild pullback (6-10%) + ATR compression
+        # + volume dry-up.
+        last_mag = magnitudes[-1]
+        if 6.0 <= last_mag < 10.0 and atr_pct < 4.0 and volume_dryup:
+            return True, (
+                f"tight pivot ({last_mag:.1f}%% pullback, "
+                f"ATR {atr_pct:.2f}%%, volume dry-up)"
+            )
+
+        # No valid pattern found
         if magnitudes[0] < 6.0:
             return False, (
                 f"Initial pullback {magnitudes[0]:.1f}%% < 6%% "
