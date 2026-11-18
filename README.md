@@ -8,13 +8,14 @@ All data is fetched live via `yfinance`. No mock data, no hardcoded prices. Ever
 
 ## What it does
 
-The engine runs **three independent filters** against every ticker and only approves trades when all three agree:
+The engine runs **four independent filters** against every ticker and only approves trades when all four agree:
 
 | Filter | What it checks | Method |
 |--------|----------------|--------|
 | **Trend Template** | Is the stock in a structural bull market? | Close > SMA-50 > SMA-200, both SMAs sloping up |
 | **Fundamental Filter** | Is revenue accelerating YoY? | Quarterly revenue growth > 20% baseline |
 | **VCP Engine** | Is there a volatility contraction pattern? | Tightening drawdowns, ATR compression, volume dry-up |
+| **RS Rating** | Is the stock outperforming peers? | Weighted multi-period return percentile (≥ 70 required) |
 
 This produces a ~1–3% approval rate on a broad watchlist — intentionally strict.
 
@@ -89,7 +90,7 @@ Output:
 
 ---
 
-## How the three filters work
+## How the four filters work
 
 ### Trend Template (Minervini)
 
@@ -102,14 +103,24 @@ Four rules validated on daily OHLCV data:
 
 All SMAs are simple moving averages (not exponential), matching Minervini's published logic. The slope is calculated via ordinary least squares over the last 20 trading days.
 
-### Fundamental Acceleration Filter (O'Neil — CAN SLIM "A")
+### Minervini Fundamental Engine (5-Dimension)
 
-Retrieves quarterly Total Revenue from `yfinance.Ticker.quarterly_financials` and computes year-over-year growth by comparing each quarter to the same quarter four periods back:
+Based on Mark Minervini's fundamental analysis criteria from *Think and Trade Like a Champion*.
+All data is extracted from `yfinance` quarterly financials in a single call.
 
-- **≥ 6 quarters (≥ 2 YoY comparisons):** latest YoY growth must exceed prior YoY growth *and* both must exceed 20%.
-- **5 quarters (1 YoY comparison):** latest YoY growth must exceed 20%.
+| # | Dimension | Source | Threshold |
+|---|-----------|--------|-----------|
+| 1 | **EPS growth** | Basic EPS (or Diluted EPS) | YoY ≥ 15% / QoQ ≥ 25% |
+| 2 | **EPS acceleration** | Same EPS series | Growth rate increasing across consecutive periods |
+| 3 | **Revenue growth** | Total Revenue | YoY ≥ 15% / QoQ ≥ 25% |
+| 4 | **Revenue acceleration** | Same revenue series | Growth rate increasing across consecutive periods |
+| 5 | **Profit margin improvement** | Gross Profit / Total Revenue + Net Income / Total Revenue | Upward trend across 3+ quarters, ≥ 1pp improvement |
 
-Missing quarterly data produces a `passed=False` with `revenue_available=False` — a clean fallback flag rather than a crash.
+**Scoring:** Each dimension is independently evaluated. The default approval threshold is
+**3 out of 5** dimensions passing. Configure via `MinerviniFundamentalEngine(min_score=N)`.
+
+**Edge cases:** Missing quarterly data produces `passed=False` with a clear reason. The
+engine never crashes — it reports what data is available and scores accordingly.
 
 ### VCP Engine (Minervini)
 
@@ -120,6 +131,29 @@ Scans the most recent ~75 calendar days (≈60 trading days) for:
 - **Volume dry-up:** latest session volume < 75% of the 20-day volume SMA (a precursor signal).
 
 The engine identifies local peaks and troughs via a simple extremum scan, then checks if the contraction sequence is declining and the final consolidation is tight.
+
+---
+
+### RS Rating (Minervini)
+
+The engine computes a Relative Strength (RS) Rating for every ticker in the
+watchlist before screening. The RS Rating is a percentile rank (0-99)
+based on weighted multi-period price returns:
+
+- **6-month return** × 50%
+- **3-month return** × 30%
+- **1-month return** × 20%
+
+Stocks with RS Rank **< 70** are rejected immediately — they are
+underperforming their large-cap peers and do not qualify as Minervini
+superperformance candidates.
+
+RS ratings are cached to `rs_cache/rs_ratings.json` with a 1-day TTL
+to avoid re-downloading ~500 tickers on every run.
+
+**Usage:** The RS pre-phase runs automatically in `batch_screen.py`.
+Standalone `vcp_momentum_engine.py` CLI usage skips RS (backward
+compatibility).
 
 ---
 

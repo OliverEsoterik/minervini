@@ -40,16 +40,20 @@ def check_ticker(
     result = trend.validate(data)
     checks = [
         ("Close > SMA-50", result.current_close > result.sma_50),
+        ("Close > SMA-150", result.current_close > (result.sma_150 or float('inf'))),
+        ("Close > SMA-200", result.current_close > result.sma_200),
         ("SMA-50 > SMA-200", result.sma_50 > result.sma_200),
         ("SMA-50 slope > 0", result.sma_50_slope > 0),
+        ("SMA-200 slope > 0", result.sma_200_slope > 0),
     ]
-    # 200-day slope is informative but not a hard sell signal alone
-    sma200_ok = result.sma_200_slope > 0
+    if result.pct_above_low_52 is not None:
+        checks.append(
+            (">=25% above 52w low", result.pct_above_low_52 >= 25.0)
+        )
 
-    print(f"  Trend Template:")
+    print(f"  Trend Template ({sum(1 for _, ok in checks if ok)}/{len(checks)}):")
     for label, ok in checks:
         print(f"    {'✅' if ok else '❌'}  {label}")
-    print(f"    {'✅' if sma200_ok else '⚠'}  SMA-200 slope > 0  (informational)")
 
     print()
     print(f"  SMA-50  : ${result.sma_50:.2f}  (slope: {result.sma_50_slope:+.4f})")
@@ -76,6 +80,19 @@ def check_ticker(
     if entry_price and not passed:
         suggested_stop = max(close * 0.96, result.sma_50)
         print(f"  →  Suggested stop-loss: ${suggested_stop:.2f}")
+
+    # --- fundamental check --------------------------------------------
+    from vcp_momentum_engine import MinerviniFundamentalEngine
+    mf_engine = MinerviniFundamentalEngine()
+    mf_result = mf_engine.screen(ticker)
+    print(f"  Fundamental (Minervini 5-dim):")
+    print(f"    {'✅' if mf_result.eps_growth.passed else '❌'}  EPS growth:       {mf_result.eps_growth.detail}")
+    print(f"    {'✅' if mf_result.eps_acceleration.passed else '❌'}  EPS acceleration: {mf_result.eps_acceleration.detail}")
+    print(f"    {'✅' if mf_result.revenue_growth.passed else '❌'}  Rev growth:       {mf_result.revenue_growth.detail}")
+    print(f"    {'✅' if mf_result.revenue_acceleration.passed else '❌'}  Rev acceleration: {mf_result.revenue_acceleration.detail}")
+    print(f"    {'✅' if mf_result.profit_margin.passed else '❌'}  Profit margin:    {mf_result.profit_margin.detail}")
+    print(f"    Score: {mf_result.score}/{mf_result.total_dims}")
+    print()
 
 
 def main() -> None:

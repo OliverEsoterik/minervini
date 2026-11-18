@@ -4,7 +4,7 @@
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import Dict, List
 
 from vcp_momentum_engine import Pipeline, ScreeningResult
 
@@ -73,10 +73,15 @@ SEEN = set()
 WATCHLIST = [x for x in WATCHLIST if not (x in SEEN or SEEN.add(x))]
 
 
-def screen_one(ticker: str, pipeline: Pipeline) -> ScreeningResult:
+def screen_one(
+    ticker: str,
+    pipeline: Pipeline,
+    rs_ranks: Dict[str, float],
+) -> ScreeningResult:
     """Screen a single ticker — returns result with error handling."""
     try:
-        return pipeline.screen(ticker)
+        rs_rank = rs_ranks.get(ticker)
+        return pipeline.screen(ticker, rs_rank=rs_rank)
     except Exception as exc:
         from vcp_momentum_engine import ScreeningResult
         r = ScreeningResult(ticker=ticker)
@@ -92,6 +97,14 @@ def main() -> None:
     print(f"  Equity: $100,000  |  Risk/Trade: 0.3%  |  Stop: -4%")
     print(f"{'='*72}\n")
 
+    # ---- RS Rating pre-phase ---------------------------------------
+    from rs_rating import RSModule
+    print("  Pre-computing RS ratings for watchlist...")
+    rs_module = RSModule()
+    rs_ranks = rs_module.get_rs_ratings(WATCHLIST)
+    valid_rs = {t: r for t, r in rs_ranks.items() if r is not None}
+    print(f"  RS computed: {len(valid_rs)}/{total} tickers")
+
     pipeline = Pipeline()
     results: List[ScreeningResult] = []
 
@@ -100,7 +113,8 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         fut_map = {
-            pool.submit(screen_one, t, pipeline): t for t in WATCHLIST
+            pool.submit(screen_one, t, pipeline, rs_ranks): t
+            for t in WATCHLIST
         }
         for fut in as_completed(fut_map):
             r = fut.result()
@@ -141,6 +155,8 @@ def main() -> None:
                 print(f"    Shares         : {ll.shares_to_buy}")
                 print(f"    Risk/Trade     : ${ll.total_risk_deployed:.0f}  ({ll.risk_pct_of_equity*100:.3f}% of equity)")
                 print(f"    CAN SLIM score : {r.canslim.overall_score}/7")
+            if r.rs_rank is not None:
+                print(f"    RS Rank        : {r.rs_rank:.0f}/99")
     else:
         print(f"\n  No stocks passed all three filters in this run.")
 
@@ -149,7 +165,7 @@ def main() -> None:
         r for r in failed
         if not r.error
         and (r.trend_template and r.trend_template.passed)
-        and (r.fundamental_filter and r.fundamental_filter.passed)
+        and (r.minervini_fundamental and r.minervini_fundamental.overall_passed)
         and not (r.vcp and r.vcp.vcp_detected)
     ]
     if near_miss:
@@ -172,20 +188,26 @@ def main() -> None:
         if not r.error
         and (r.trend_template and r.trend_template.passed)
         and (r.vcp and r.vcp.vcp_detected)
-        and not (r.fundamental_filter and r.fundamental_filter.passed)
+        and not (r.minervini_fundamental and r.minervini_fundamental.overall_passed)
     ]
     if near_miss_ff:
         print(f"\n\n{'─'*72}")
         print(f"  ⚠  NEAR-MISSES (TT+VCP PASS, FUND FAIL)")
         print(f"{'─'*72}")
         for r in sorted(near_miss_ff, key=lambda x: x.ticker):
-            ff = r.fundamental_filter
-            ff_note = (
-                f"YoY growth {ff.latest_yoy_growth*100:.1f}%"
-                if ff and ff.latest_yoy_growth is not None
-                else "no fund data"
-            )
-            print(f"  {r.ticker:8s} → {ff_note}")
+            mf = r.minervini_fundamental
+            if mf:
+                dims = [
+                    f"EPS:{'✅' if mf.eps_growth.passed else '❌'}"
+                        + (f"{mf.eps_growth.value*100:.0f}%" if mf.eps_growth.value is not None else ""),
+                    f"Rev:{'✅' if mf.revenue_growth.passed else '❌'}"
+                        + (f"{mf.revenue_growth.value*100:.0f}%" if mf.revenue_growth.value is not None else ""),
+                    f"Marg:{'✅' if mf.profit_margin.passed else '❌'}",
+                    f"Accel:{mf.score}/{mf.total_dims}",
+                ]
+                print(f"  {r.ticker:8s} → {' | '.join(dims)}")
+            else:
+                print(f"  {r.ticker:8s} → no fundamental data")
 
     # ── Errors ─────────────────────────────────────────────────────
     if errored:
@@ -194,6 +216,18 @@ def main() -> None:
         print(f"{'─'*72}")
         for r in errored:
             print(f"  {r.ticker}: {r.error}")
+
+    # ---- RS Gate Rejections ------------------------------------------
+    rs_rejected = [
+        r for r in failed
+        if r.error and "RS Rating" in (r.error or "")
+    ]
+    if rs_rejected:
+        print(f"\n{'─'*72}")
+        print(f"  📊 RS GATE REJECTED ({len(rs_rejected)}) — rank < 70")
+        print(f"{'─'*72}")
+        for r in sorted(rs_rejected, key=lambda x: x.ticker):
+            print(f"  {r.ticker:8s} → {r.error}")
 
     # ── Summary ────────────────────────────────────────────────────
     print(f"\n\n{'='*72}")
