@@ -149,7 +149,7 @@ def main() -> None:
         r for r in failed
         if not r.error
         and (r.trend_template and r.trend_template.passed)
-        and (r.fundamental_filter and r.fundamental_filter.passed)
+        and (r.minervini_fundamental and r.minervini_fundamental.overall_passed)
         and not (r.vcp and r.vcp.vcp_detected)
     ]
     if near_miss:
@@ -172,20 +172,26 @@ def main() -> None:
         if not r.error
         and (r.trend_template and r.trend_template.passed)
         and (r.vcp and r.vcp.vcp_detected)
-        and not (r.fundamental_filter and r.fundamental_filter.passed)
+        and not (r.minervini_fundamental and r.minervini_fundamental.overall_passed)
     ]
     if near_miss_ff:
         print(f"\n\n{'─'*72}")
         print(f"  ⚠  NEAR-MISSES (TT+VCP PASS, FUND FAIL)")
         print(f"{'─'*72}")
         for r in sorted(near_miss_ff, key=lambda x: x.ticker):
-            ff = r.fundamental_filter
-            ff_note = (
-                f"YoY growth {ff.latest_yoy_growth*100:.1f}%"
-                if ff and ff.latest_yoy_growth is not None
-                else "no fund data"
-            )
-            print(f"  {r.ticker:8s} → {ff_note}")
+            mf = r.minervini_fundamental
+            if mf:
+                dims = [
+                    f"EPS:{'✅' if mf.eps_growth.passed else '❌'}"
+                        + (f"{mf.eps_growth.value*100:.0f}%" if mf.eps_growth.value is not None else ""),
+                    f"Rev:{'✅' if mf.revenue_growth.passed else '❌'}"
+                        + (f"{mf.revenue_growth.value*100:.0f}%" if mf.revenue_growth.value is not None else ""),
+                    f"Marg:{'✅' if mf.profit_margin.passed else '❌'}",
+                    f"Accel:{mf.score}/{mf.total_dims}",
+                ]
+                print(f"  {r.ticker:8s} → {' | '.join(dims)}")
+            else:
+                print(f"  {r.ticker:8s} → no fundamental data")
 
     # ── Errors ─────────────────────────────────────────────────────
     if errored:
