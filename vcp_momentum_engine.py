@@ -544,8 +544,8 @@ class MinerviniFundamentalEngine:
 
         dims = [eps_growth, eps_accel, rev_growth, rev_accel, margin]
         score = sum(1 for d in dims if d.passed)
-        # Count dimensions where data was available (value set)
-        total = sum(1 for d in dims if d.value is not None)
+        # Total dimensions in the engine (fixed denominator — missing data counts as fail)
+        total = len(dims)
 
         detail_lines = [
             f"  EPS growth:       {'✅' if eps_growth.passed else '❌'} {eps_growth.detail}",
@@ -557,9 +557,10 @@ class MinerviniFundamentalEngine:
         ]
         overall = score >= self.min_score
 
+        available_dims = sum(1 for d in dims if d.value is not None)
         logger.info(
-            "MinerviniFundamental [%s]: %s (%d/%d dims, min_score=%d)",
-            ticker, "PASS" if overall else "FAIL", score, total, self.min_score,
+            "MinerviniFundamental [%s]: %s (%d/%d dims, %d available, min_score=%d)",
+            ticker, "PASS" if overall else "FAIL", score, total, available_dims, self.min_score,
         )
 
         return MinerviniFundamentalResult(
