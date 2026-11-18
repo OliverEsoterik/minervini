@@ -1675,6 +1675,7 @@ class ScreeningResult:
     """Aggregate result for one ticker through the full pipeline."""
     ticker: str
     error: Optional[str] = None
+    rs_rank: Optional[float] = None
     ohlcv_data: Optional[OHLCVData] = None
     trend_template: Optional[TrendTemplateResult] = None
     minervini_fundamental: Optional[MinerviniFundamentalResult] = None
@@ -1704,6 +1705,7 @@ class ScreeningResult:
         d: Dict[str, Any] = {"ticker": self.ticker, "approved": self.approved}
         if self.error:
             d["error"] = self.error
+        d["rs_rank"] = self._to_native(self.rs_rank) if self.rs_rank is not None else None
         if self.trend_template:
             d["trend_template"] = {
                 "passed": self.trend_template.passed,
@@ -1771,6 +1773,7 @@ class Pipeline:
         ticker: str,
         entry_price: Optional[float] = None,
         stop_loss_pct: float = 0.04,   # 4 % below entry
+        rs_rank: Optional[float] = None,
     ) -> ScreeningResult:
         """Run the full pipeline for a single *ticker*.
 
@@ -1818,6 +1821,20 @@ class Pipeline:
             logger.info(
                 "52-week high gate [%s]: PASS (%.1f%% below high)",
                 ticker, pct_off_high,
+            )
+        # ---- 0d. RS Rating Gate ----------------------------------------
+        if rs_rank is not None and rs_rank < 70:
+            result.error = (
+                f"RS Rating {rs_rank:.0f} < 70 (Minervini minimum)"
+            )
+            logger.info(
+                "RS gate [%s]: FAIL — rank %.0f < 70", ticker, rs_rank,
+            )
+            return result
+        result.rs_rank = rs_rank
+        if rs_rank is not None:
+            logger.info(
+                "RS gate [%s]: PASS (rank %.0f)", ticker, rs_rank,
             )
         trend_result = self.trend.validate(data)
         result.trend_template = trend_result
