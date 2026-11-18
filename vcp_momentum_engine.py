@@ -395,18 +395,6 @@ class TrendTemplateValidator:
 # Module 3 — Fundamental Acceleration Filter  (CAN SLIM — "A")
 # ===================================================================
 
-@dataclass
-class FundamentalFilterResult:
-    """Result of the CAN SLIM fundamental acceleration check."""
-    ticker: str
-    passed: bool
-    latest_yoy_growth: Optional[float] = None
-    prior_yoy_growth: Optional[float] = None
-    accelerating: Optional[bool] = None
-    revenue_available: bool = False
-    earnings_available: bool = False
-    details: str = ""
-
 
 @dataclass
 class MetricResult:
@@ -465,115 +453,338 @@ class MinerviniFundamentalResult:
         }
 
 
-class FundamentalFilter:
-    """Year-over-year revenue / earnings acceleration filter.
+# Deprecated — use MinerviniFundamentalResult instead
+FundamentalFilterResult = MinerviniFundamentalResult
 
-    William O'Neil's **CAN SLIM "A"** — accelerating earnings quality:
 
-    * Extract sequential quarterly Total Revenue / Net Income data.
-    * Compute YoY growth rates by comparing each quarter to the same
-      quarter 4 periods back.
-    * Verify that the latest YoY growth rate exceeds the prior YoY
-      growth rate **and** both are above the **20 % baseline threshold**.
+class MinerviniFundamentalEngine:
+    """5-dimension fundamental engine based on Mark Minervini's criteria.
+
+    Evaluates EPS growth, EPS acceleration, revenue growth, revenue
+    acceleration, and profit margin improvement from quarterly financials.
     """
 
-    MIN_GROWTH: float = BASELINE_GROWTH_THRESHOLD
+    YOY_THRESHOLD: float = 0.15    # 15 %
+    QOQ_THRESHOLD: float = 0.25    # 25 %
+    MIN_MARGIN_IMPROVEMENT_PP: float = 0.01  # 1 percentage point
+
+    def __init__(self, min_score: int = 3) -> None:
+        self.min_score = min_score
 
     # ------------------------------------------------------------------
-    def screen(self, ticker: str) -> FundamentalFilterResult:
-        """Fetch quarterly financials for *ticker* and evaluate acceleration.
+    def screen(self, ticker: str) -> MinerviniFundamentalResult:
+        """Fetch quarterly financials and evaluate all 5 dimensions.
 
-        CAN SLIM "A" — accelerating earnings quality.
-
-        Compares each quarter to the same quarter 4 periods back (YoY).
-        With only 5 quarters (1 YoY comparison), we accept a baseline
-        check; with ≥ 6 quarters we also verify the growth rate is
-        accelerating.
-
-        If revenue data is missing entirely the result will have
-        ``passed=False``, ``revenue_available=False`` and a log warning —
-        the pipeline can decide to continue with a fallback flag rather
-        than crash.
+        Returns a ``MinerviniFundamentalResult`` with per-dimension breakdown.
+        Never raises — missing data produces ``passed=False`` with a clear
+        detail string.
         """
         revenues, earnings = DataIngestion.fetch_quarterly_financials(ticker)
+        rev_series = revenues     # pd.Series, oldest-first
+        ear_series = earnings
 
-        rev_ok = len(revenues) >= 5
-        ear_ok = len(earnings) >= 5
+        # Fetch EPS and Gross Profit from a fresh call
+        eps_series, gp_series, oi_series = self._fetch_extra_metrics(ticker)
 
-        if not rev_ok:
-            logger.warning(
-                "FundamentalFilter [%s]: insufficient quarterly revenue data "
-                "(need ≥ 5 quarters, got %d). Skipping acceleration test.",
-                ticker, len(revenues),
-            )
-            return FundamentalFilterResult(
-                ticker=ticker,
-                passed=False,
-                revenue_available=False,
-                earnings_available=ear_ok,
-                details="Insufficient quarterly revenue data.",
-            )
+        # Compute each dimension
+        eps_growth = self._eval_eps_growth(eps_series)
+        eps_accel = self._eval_eps_acceleration(eps_series)
+        rev_growth = self._eval_revenue_growth(rev_series)
+        rev_accel = self._eval_revenue_acceleration(rev_series)
+        margin = self._eval_profit_margin(gp_series, ear_series, rev_series)
 
-        # --- compute YoY growth rates (Q vs Q-4) ---------------------
-        vals = revenues.values  # sorted oldest first
-        growth_rates: List[float] = []
+        dims = [eps_growth, eps_accel, rev_growth, rev_accel, margin]
+        score = sum(1 for d in dims if d.passed)
+        total = sum(1 for d in dims if d.value is not None or "insufficient" not in d.detail.lower())
+
+        detail_lines = [
+            f"  EPS growth:       {'✅' if eps_growth.passed else '❌'} {eps_growth.detail}",
+            f"  EPS acceleration: {'✅' if eps_accel.passed else '❌'} {eps_accel.detail}",
+            f"  Rev growth:       {'✅' if rev_growth.passed else '❌'} {rev_growth.detail}",
+            f"  Rev acceleration: {'✅' if rev_accel.passed else '❌'} {rev_accel.detail}",
+            f"  Profit margin:    {'✅' if margin.passed else '❌'} {margin.detail}",
+            f"  Score: {score}/{total} passed",
+        ]
+        overall = score >= self.min_score
+
+        logger.info(
+            "MinerviniFundamental [%s]: %s (%d/%d dims, min_score=%d)",
+            ticker, "PASS" if overall else "FAIL", score, total, self.min_score,
+        )
+
+        return MinerviniFundamentalResult(
+            ticker=ticker,
+            eps_growth=eps_growth,
+            eps_acceleration=eps_accel,
+            revenue_growth=rev_growth,
+            revenue_acceleration=rev_accel,
+            profit_margin=margin,
+            score=score,
+            total_dims=total,
+            overall_passed=overall,
+            details="\n".join(detail_lines),
+        )
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _fetch_extra_metrics(
+        ticker: str,
+    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Fetch EPS, Gross Profit, and Operating Income from quarterly financials."""
+        eps = pd.Series()
+        gp = pd.Series()
+        oi = pd.Series()
+        try:
+            t = yf.Ticker(ticker)
+            qf = t.quarterly_financials
+            if qf is None or qf.empty:
+                return eps, gp, oi
+
+            if "Basic EPS" in qf.index:
+                eps = qf.loc["Basic EPS"].dropna().astype(float).sort_index()
+            elif "Diluted EPS" in qf.index:
+                eps = qf.loc["Diluted EPS"].dropna().astype(float).sort_index()
+
+            if "Gross Profit" in qf.index:
+                gp = qf.loc["Gross Profit"].dropna().astype(float).sort_index()
+
+            if "Operating Income" in qf.index:
+                oi = qf.loc["Operating Income"].dropna().astype(float).sort_index()
+
+        except Exception as exc:
+            logger.warning("_fetch_extra_metrics(%s) failed: %s", ticker, exc)
+
+        return eps, gp, oi
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_yoy_growth(series: pd.Series) -> List[float]:
+        """Compute YoY growth rates: (val[t] - val[t-4]) / val[t-4]."""
+        vals = series.values
+        rates: List[float] = []
         for i in range(4, len(vals)):
             prev = vals[i - 4]
             curr = vals[i]
             if prev > 0:
-                growth_rates.append((curr - prev) / prev)
+                rates.append(float((curr - prev) / prev))
             else:
-                growth_rates.append(0.0)
+                rates.append(0.0)
+        return rates
 
-        if len(growth_rates) == 0:
-            return FundamentalFilterResult(
-                ticker=ticker,
-                passed=False,
-                revenue_available=True,
-                earnings_available=ear_ok,
-                details="No YoY comparisons possible.",
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _eval_eps_growth(eps: pd.Series) -> MetricResult:
+        """Check EPS growth against YoY and QoQ thresholds."""
+        if len(eps) < 2:
+            return MetricResult(
+                label="EPS growth", passed=False,
+                detail="Insufficient EPS data.",
             )
 
-        latest = growth_rates[-1]
-
-        # --- With ≥ 2 YoY periods, check acceleration ----------------
-        #     With exactly 1, just check baseline threshold.
-        if len(growth_rates) >= 2:
-            prior = growth_rates[-2]
-            accelerating = latest > prior
-            above_baseline = latest >= self.MIN_GROWTH and prior >= self.MIN_GROWTH
-            passed = accelerating and above_baseline
+        vals = eps.values
+        # Prefer YoY (≥ 5 quarters)
+        if len(vals) >= 5:
+            latest = (vals[-1] - vals[-5]) / vals[-5] if vals[-5] > 0 else 0.0
+            threshold = 0.15
+            mode = "YoY"
         else:
-            prior = None
-            accelerating = None  # insufficient data to determine
-            above_baseline = latest >= self.MIN_GROWTH
-            passed = above_baseline
+            latest = (vals[-1] - vals[-2]) / vals[-2] if vals[-2] > 0 else 0.0
+            threshold = 0.25
+            mode = "QoQ"
 
-        logger.info(
-            "FundamentalFilter [%s]: %s — latest YoY %+.2f%%, "
-            "prior=%s, accel=%s, baseline=%s",
-            ticker,
-            "PASS" if passed else "FAIL",
-            latest * 100,
-            f"{prior*100:+.2f}%" if prior is not None else "N/A",
-            accelerating if accelerating is not None else "N/A",
-            above_baseline,
+        passed = latest >= threshold
+        return MetricResult(
+            label=f"EPS growth ({mode})",
+            passed=passed,
+            value=latest,
+            threshold=threshold,
+            quarters=[float(v) for v in vals],
+            detail=f"{latest*100:+.2f}% {'≥' if passed else '<'} {threshold*100:.0f}% ({mode})",
         )
 
-        return FundamentalFilterResult(
-            ticker=ticker,
-            passed=passed,
-            latest_yoy_growth=latest,
-            prior_yoy_growth=prior,
-            accelerating=accelerating,
-            revenue_available=True,
-            earnings_available=ear_ok,
-            details=(
-                f"Latest YoY revenue growth: {latest:+.2%}, "
-                + (f"prior: {prior:+.2%}, " if prior is not None else "")
-                + (f"accelerating={accelerating}, " if accelerating is not None else "")
-                + f">={self.MIN_GROWTH*100:.0f}% baseline={above_baseline}"
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _eval_eps_acceleration(eps: pd.Series) -> MetricResult:
+        """Check if EPS YoY growth rate is accelerating."""
+        if len(eps) < 6:
+            return MetricResult(
+                label="EPS acceleration",
+                passed=False,
+                detail="Insufficient data (need ≥ 6 quarters).",
+            )
+
+        rates = MinerviniFundamentalEngine._compute_yoy_growth(eps)
+        if len(rates) < 2:
+            return MetricResult(
+                label="EPS acceleration",
+                passed=False,
+                detail="Insufficient YoY comparisons.",
+            )
+
+        latest = rates[-1]
+        prior = rates[-2]
+        accelerating = latest > prior
+        return MetricResult(
+            label="EPS acceleration",
+            passed=accelerating,
+            value=latest,
+            threshold=prior,
+            quarters=[float(r) for r in rates],
+            detail=(
+                f"{latest*100:+.2f}% → {prior*100:+.2f}% "
+                f"{'accelerating' if accelerating else 'decelerating'}"
             ),
+        )
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _eval_revenue_growth(rev: pd.Series) -> MetricResult:
+        """Check revenue growth against YoY and QoQ thresholds."""
+        if len(rev) < 2:
+            return MetricResult(
+                label="Revenue growth", passed=False,
+                detail="Insufficient revenue data.",
+            )
+
+        vals = rev.values
+        if len(vals) >= 5:
+            latest = (vals[-1] - vals[-5]) / vals[-5] if vals[-5] > 0 else 0.0
+            threshold = 0.15
+            mode = "YoY"
+        else:
+            latest = (vals[-1] - vals[-2]) / vals[-2] if vals[-2] > 0 else 0.0
+            threshold = 0.25
+            mode = "QoQ"
+
+        passed = latest >= threshold
+        return MetricResult(
+            label=f"Revenue growth ({mode})",
+            passed=passed,
+            value=latest,
+            threshold=threshold,
+            quarters=[float(v) for v in vals],
+            detail=f"{latest*100:+.2f}% {'≥' if passed else '<'} {threshold*100:.0f}% ({mode})",
+        )
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _eval_revenue_acceleration(rev: pd.Series) -> MetricResult:
+        """Check if revenue YoY growth rate is accelerating."""
+        if len(rev) < 6:
+            return MetricResult(
+                label="Revenue acceleration",
+                passed=False,
+                detail="Insufficient data (need ≥ 6 quarters).",
+            )
+
+        rates = MinerviniFundamentalEngine._compute_yoy_growth(rev)
+        if len(rates) < 2:
+            return MetricResult(
+                label="Revenue acceleration",
+                passed=False,
+                detail="Insufficient YoY comparisons.",
+            )
+
+        latest = rates[-1]
+        prior = rates[-2]
+        accelerating = latest > prior
+        return MetricResult(
+            label="Revenue acceleration",
+            passed=accelerating,
+            value=latest,
+            threshold=prior,
+            quarters=[float(r) for r in rates],
+            detail=(
+                f"{latest*100:+.2f}% → {prior*100:+.2f}% "
+                f"{'accelerating' if accelerating else 'decelerating'}"
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _eval_profit_margin(
+        gp: pd.Series, ear: pd.Series, rev: pd.Series,
+    ) -> MetricResult:
+        """Check if gross and net profit margins are improving.
+
+        Uses Gross Profit / Total Revenue for gross margin.
+        Uses Net Income / Total Revenue for net margin.
+        Requires ≥ 3 quarters to detect a trend.
+        """
+        if rev.empty or len(rev) < 3:
+            return MetricResult(
+                label="Profit margin",
+                passed=False,
+                detail="Insufficient data (need ≥ 3 quarters of revenue).",
+            )
+
+        rev_vals = rev.values
+        gross_margins: List[float] = []
+        net_margins: List[float] = []
+
+        if not gp.empty:
+            gp_vals = gp.values
+            for i in range(min(len(gp_vals), len(rev_vals))):
+                if rev_vals[i] > 0:
+                    gross_margins.append(float(gp_vals[i] / rev_vals[i]))
+
+        if not ear.empty:
+            ear_vals = ear.values
+            for i in range(min(len(ear_vals), len(rev_vals))):
+                if rev_vals[i] > 0:
+                    net_margins.append(float(ear_vals[i] / rev_vals[i]))
+
+        if not gross_margins and not net_margins:
+            return MetricResult(
+                label="Profit margin",
+                passed=False,
+                detail="No margin data available.",
+            )
+
+        # Check if margins are improving over last 3 periods
+        improving = False
+        detail_parts: List[str] = []
+
+        if len(gross_margins) >= 3:
+            gm = gross_margins[-3:]
+            gm_improving = gm[-1] > gm[-2] > gm[-3]
+            improving = improving or gm_improving
+            detail_parts.append(
+                f"gross {'↑' if gm_improving else '→'} "
+                f"{gm[0]*100:.1f}%→{gm[1]*100:.1f}%→{gm[2]*100:.1f}%"
+            )
+        elif gross_margins:
+            detail_parts.append(f"gross {gross_margins[-1]*100:.1f}%")
+
+        if len(net_margins) >= 3:
+            nm = net_margins[-3:]
+            nm_improving = nm[-1] > nm[-2] > nm[-3]
+            improving = improving or nm_improving
+            detail_parts.append(
+                f"net {'↑' if nm_improving else '→'} "
+                f"{nm[0]*100:.1f}%→{nm[1]*100:.1f}%→{nm[2]*100:.1f}%"
+            )
+        elif net_margins:
+            detail_parts.append(f"net {net_margins[-1]*100:.1f}%")
+
+        # Build a value for MetricResult — margin improvement in pp
+        if gross_margins:
+            margin_improvement_pp = (gross_margins[-1] - gross_margins[0]) * 100
+        elif net_margins:
+            margin_improvement_pp = (net_margins[-1] - net_margins[0]) * 100
+        else:
+            margin_improvement_pp = 0.0
+
+        # At least 1pp improvement required for pass
+        passed = improving and margin_improvement_pp >= 1.0
+
+        return MetricResult(
+            label="Profit margin",
+            passed=passed,
+            value=round(margin_improvement_pp, 2),
+            threshold=1.0,
+            quarters=gross_margins or net_margins,
+            detail=" | ".join(detail_parts),
         )
 
 
