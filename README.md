@@ -15,6 +15,7 @@ The engine runs **three independent filters** against every ticker and only appr
 | **Trend Template** | Is the stock in a structural bull market? | Close > SMA-50 > SMA-200, both SMAs sloping up |
 | **Fundamental Filter** | Is revenue accelerating YoY? | Quarterly revenue growth > 20% baseline |
 | **VCP Engine** | Is there a volatility contraction pattern? | Tightening drawdowns, ATR compression, volume dry-up |
+| **RS Rating** | Is the stock outperforming peers? | Weighted multi-period return percentile (≥ 70 required) |
 
 This produces a ~1–3% approval rate on a broad watchlist — intentionally strict.
 
@@ -130,6 +131,29 @@ Scans the most recent ~75 calendar days (≈60 trading days) for:
 - **Volume dry-up:** latest session volume < 75% of the 20-day volume SMA (a precursor signal).
 
 The engine identifies local peaks and troughs via a simple extremum scan, then checks if the contraction sequence is declining and the final consolidation is tight.
+
+---
+
+### RS Rating (Minervini)
+
+The engine computes a Relative Strength (RS) Rating for every ticker in the
+watchlist before screening. The RS Rating is a percentile rank (0-99)
+based on weighted multi-period price returns:
+
+- **6-month return** × 50%
+- **3-month return** × 30%
+- **1-month return** × 20%
+
+Stocks with RS Rank **< 70** are rejected immediately — they are
+underperforming their large-cap peers and do not qualify as Minervini
+superperformance candidates.
+
+RS ratings are cached to `rs_cache/rs_ratings.json` with a 1-day TTL
+to avoid re-downloading ~500 tickers on every run.
+
+**Usage:** The RS pre-phase runs automatically in `batch_screen.py`.
+Standalone `vcp_momentum_engine.py` CLI usage skips RS (backward
+compatibility).
 
 ---
 
