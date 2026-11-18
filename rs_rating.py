@@ -425,3 +425,36 @@ class RSModule:
             len(tickers),
         )
         return ranks
+
+
+# ===================================================================
+# Standalone execution
+# ===================================================================
+
+
+def main() -> None:
+    """Compute and print RS ratings for tickers passed on the command line."""
+    import sys
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: python3 rs_rating.py TICKER [TICKER ...]")
+        print("  Computes and prints RS ratings for the given tickers.")
+        sys.exit(0)
+
+    module = RSModule()
+    ranks = module.get_rs_ratings(args, force_refresh=True)
+    if ranks:
+        print(f"{'Ticker':8s} {'RS Rank':>8s}")
+        print("-" * 18)
+        for t in sorted(args):
+            r = ranks.get(t, None)
+            if r is not None:
+                print(f"{t:8s} {r:>7.0f}/99")
+            else:
+                print(f"{t:8s} {'N/A':>8s}")
+    else:
+        print("No RS ratings computed. Check logs for details.")
+
+
+if __name__ == "__main__":
+    main()
