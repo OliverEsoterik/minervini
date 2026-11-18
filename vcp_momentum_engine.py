@@ -1123,6 +1123,7 @@ class VCPResult:
     """Output of the VCP engine for one ticker."""
     ticker: str
     vcp_detected: bool
+    vcp_status: str = "none"        # "forming", "breakout", "none"
     contractions: List[Dict[str, float]] = field(default_factory=list)
     latest_consolidation_pct: Optional[float] = None
     atr_pct: Optional[float] = None
@@ -1166,26 +1167,29 @@ class VCPEngine:
         peaks_troughs = self._find_peaks_troughs(df)
         contractions = self._compute_contractions(peaks_troughs, df)
 
-        # --- 1b. Recency check — VCP must not have already resolved ------
-        # If the current price is ABOVE the last contraction's peak, the
-        # VCP has already broken out.  The setup is no longer active.
+        # --- 1b. Breakout check — price above VCP pivot -----------
+        # If the current price is above the last contraction's peak, the
+        # VCP has already broken out.  We still flag it as actionable
+        # (vcp_detected=True) with status="breakout" so the screener
+        # shows it rather than silently dropping it.
         if contractions:
             last_peak = float(contractions[-1]["peak"])
             current_close = float(df["Close"].iloc[-1])
             if current_close > last_peak:
                 logger.info(
-                    "VCP [%s]: resolved — current $%.2f > peak $%.2f",
+                    "VCP [%s]: breakout — $%.2f above pivot $%.2f",
                     ticker, current_close, last_peak,
                 )
                 return VCPResult(
                     ticker=ticker,
-                    vcp_detected=False,
+                    vcp_detected=True,
+                    vcp_status="breakout",
                     contractions=contractions,
                     latest_consolidation_pct=contractions[-1]["range_pct"],
                     atr_pct=self._atr_percent(df),
                     volume_dryup=self._volume_dryup(df)[1],
                     volume_ratio=self._volume_dryup(df)[0],
-                    details=f"VCP already resolved — price ${current_close:.2f} above peak ${last_peak:.2f}",
+                    details=f"Breakout above pivot ${last_peak:.2f} (current: ${current_close:.2f})",
                 )
 
         # --- 2. ATR compression --------------------------------------
@@ -1242,6 +1246,7 @@ class VCPEngine:
         return VCPResult(
             ticker=ticker,
             vcp_detected=vcp_detected,
+            vcp_status="forming" if vcp_detected else "none",
             contractions=contractions,
             latest_consolidation_pct=latest_con,
             atr_pct=atr_pct,
