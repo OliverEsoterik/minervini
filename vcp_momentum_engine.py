@@ -57,7 +57,13 @@ if not logger.handlers:
 # ---------------------------------------------------------------------------
 DEFAULT_LOOKBACK_DAYS: int = 400  # guarantee >= 200 trading days
 VCP_LOOKBACK_DAYS: int = 75       # conservative buffer around 60 trading days
-TREND_SLOPE_WINDOW: int = 20      # trading days for SMA slope check
+TREND_SLOPE_WINDOW: int = 20      # trading days for SMA slope check (primary)
+# Informational slope windows for SMA-200 maturity assessment.
+# Minervini says 200-day SMA should rise "at least 1 month, 4-5 months preferred".
+# - 20d: ~1 month (primary pass/fail)
+# - 42d: ~2 months (informational)
+# - 63d: ~3 months (informational)
+SMA200_SLOPE_WINDOWS: tuple = (20, 42, 63)
 DEFAULT_EQUITY: float = 100_000.0
 DEFAULT_RISK_PCT: float = 0.003   # 0.3 % max risk per trade
 VOLUME_DRYUP_THRESHOLD: float = 0.75     # < 75 % of 20-d volume SMA
@@ -285,6 +291,8 @@ class TrendTemplateResult:
     sma_150_slope: Optional[float] = None  # slope of 150-day SMA
     low_52: Optional[float] = None       # 52-week low (data range min)
     pct_above_low_52: Optional[float] = None  # % above 52-week low
+    sma_200_slope_2m: Optional[float] = None  # 200-day slope over ~2 months (informational)
+    sma_200_slope_3m: Optional[float] = None  # 200-day slope over ~3 months (informational)
     details: str = ""
 
 
@@ -335,6 +343,13 @@ class TrendTemplateValidator:
         slope_50 = self._slope(sma_50)
         slope_150 = self._slope(sma_150) if len(close) >= 150 else 0.0
         slope_200 = self._slope(sma_200)
+
+        # --- longer-window SMA-200 slopes (informational) ----------
+        # Minervini prefers 4-5 months of rising 200-day SMA.
+        # These are displayed in check_trend.py but don't affect pass/fail.
+        len_sma200 = len(close) - 200  # non-NaN values in SMA-200 series
+        slope_200_2m = self._slope(sma_200, window=42) if len_sma200 >= 42 else None
+        slope_200_3m = self._slope(sma_200, window=63) if len_sma200 >= 63 else None
 
         # --- 52-week low proximity (Minervini rule: >= 25% above low) -
         low_52 = float(close.min())
@@ -402,6 +417,8 @@ class TrendTemplateValidator:
             sma_200_slope=slope_200,
             low_52=round(low_52, 2),
             pct_above_low_52=round(pct_above_low_52, 1),
+            sma_200_slope_2m=round(slope_200_2m, 4) if slope_200_2m is not None else None,
+            sma_200_slope_3m=round(slope_200_3m, 4) if slope_200_3m is not None else None,
             details=detail,
         )
 
@@ -1106,6 +1123,7 @@ class VCPResult:
     """Output of the VCP engine for one ticker."""
     ticker: str
     vcp_detected: bool
+    vcp_status: str = "none"        # "forming", "breakout", "none"
     contractions: List[Dict[str, float]] = field(default_factory=list)
     latest_consolidation_pct: Optional[float] = None
     atr_pct: Optional[float] = None
@@ -1149,26 +1167,29 @@ class VCPEngine:
         peaks_troughs = self._find_peaks_troughs(df)
         contractions = self._compute_contractions(peaks_troughs, df)
 
-        # --- 1b. Recency check — VCP must not have already resolved ------
-        # If the current price is ABOVE the last contraction's peak, the
-        # VCP has already broken out.  The setup is no longer active.
+        # --- 1b. Breakout check — price above VCP pivot -----------
+        # If the current price is above the last contraction's peak, the
+        # VCP has already broken out.  We still flag it as actionable
+        # (vcp_detected=True) with status="breakout" so the screener
+        # shows it rather than silently dropping it.
         if contractions:
             last_peak = float(contractions[-1]["peak"])
             current_close = float(df["Close"].iloc[-1])
             if current_close > last_peak:
                 logger.info(
-                    "VCP [%s]: resolved — current $%.2f > peak $%.2f",
+                    "VCP [%s]: breakout — $%.2f above pivot $%.2f",
                     ticker, current_close, last_peak,
                 )
                 return VCPResult(
                     ticker=ticker,
-                    vcp_detected=False,
+                    vcp_detected=True,
+                    vcp_status="breakout",
                     contractions=contractions,
                     latest_consolidation_pct=contractions[-1]["range_pct"],
                     atr_pct=self._atr_percent(df),
                     volume_dryup=self._volume_dryup(df)[1],
                     volume_ratio=self._volume_dryup(df)[0],
-                    details=f"VCP already resolved — price ${current_close:.2f} above peak ${last_peak:.2f}",
+                    details=f"Breakout above pivot ${last_peak:.2f} (current: ${current_close:.2f})",
                 )
 
         # --- 2. ATR compression --------------------------------------
@@ -1225,6 +1246,7 @@ class VCPEngine:
         return VCPResult(
             ticker=ticker,
             vcp_detected=vcp_detected,
+            vcp_status="forming" if vcp_detected else "none",
             contractions=contractions,
             latest_consolidation_pct=latest_con,
             atr_pct=atr_pct,

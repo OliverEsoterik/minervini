@@ -4,3 +4,12 @@ __pycache__/
 *.so
 .env
 .DS_Store
+
+# RS rating cache
+rs_cache/
+
+# Lock files
+*.lock
+
+# Superpowers design docs (not part of the engine)
+docs/superpowers/

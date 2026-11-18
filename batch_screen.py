@@ -144,19 +144,42 @@ def main() -> None:
         for r in sorted(approved, key=lambda x: x.ticker):
             d = r.to_dict()
             ll = r.position_sizing
-            print(f"\n  {r.ticker}")
+            v = r.vcp
+
+            # ── Status label ────────────────────────────────────────
+            is_breakout = v and v.vcp_status == "breakout"
+            status_label = "BREAKOUT" if is_breakout else "SETUP"
+            print(f"\n  {r.ticker}  —  {'📈' if is_breakout else '📐'} {status_label}")
             print(f"    Trend Template : PASS")
             print(f"    Fundamental    : PASS")
             print(f"    VCP Pattern    : DETECTED")
+
+            # ── VCP breakout level (last swing high) ───────────────
+            pivot = None
+            if v and v.contractions:
+                pivot = v.contractions[-1]["peak"]
+                close = ll.entry_price if ll else None
+                if close:
+                    if is_breakout:
+                        pct_above = (close / pivot - 1) * 100
+                        print(f"    Pivot Cleared  : ${pivot:.2f}  (+{pct_above:.1f}% above)")
+                    else:
+                        pct_to_pivot = (pivot / close - 1) * 100
+                        print(f"    VCP Pivot      : ${pivot:.2f}  (needs +{pct_to_pivot:.1f}% to clear)")
+
             if ll:
                 print(f"    ─────────────────────────────────────────────")
-                print(f"    Entry Price    : ${ll.entry_price:.2f}")
+                print(f"    Last Close     : ${ll.entry_price:.2f}  (position sizing reference)")
                 print(f"    Stop-Loss      : ${ll.stop_loss_price:.2f}  ({((ll.stop_loss_price/ll.entry_price)-1)*100:+.1f}%)")
                 print(f"    Shares         : {ll.shares_to_buy}")
                 print(f"    Risk/Trade     : ${ll.total_risk_deployed:.0f}  ({ll.risk_pct_of_equity*100:.3f}% of equity)")
                 print(f"    CAN SLIM score : {r.canslim.overall_score}/7")
             if r.rs_rank is not None:
                 print(f"    RS Rank        : {r.rs_rank:.0f}/99")
+            if is_breakout:
+                print(f"    >> Stock has broken above pivot. Manage as an active position.")
+            elif pivot:
+                print(f"    >> Enter only on a confirmed breakout above ${pivot:.2f} with volume.")
     else:
         print(f"\n  No stocks passed all three filters in this run.")
 
@@ -241,8 +264,19 @@ def main() -> None:
     print(f"{'='*72}\n")
 
     if approved:
-        print(f"  >> PRINT THIS: The {len(approved)} stocks above are ready to buy right now.")
-        print(f"     Use the price, stop-loss, and share count shown.")
+        num_setups = sum(1 for r in approved if r.vcp and r.vcp.vcp_status == "forming")
+        num_breakouts = sum(1 for r in approved if r.vcp and r.vcp.vcp_status == "breakout")
+        parts = []
+        if num_setups:
+            parts.append(f"{num_setups} VCP set-up(s) — enter on breakout above pivot")
+        if num_breakouts:
+            parts.append(f"{num_breakouts} breakout(s) — manage as active positions")
+        print(f"  >> Found {len(approved)} candidate(s): {', '.join(parts)}.")
+        for r in approved:
+            v = r.vcp
+            pivot = v.contractions[-1]["peak"] if v and v.contractions else None
+            if pivot and v.vcp_status == "forming":
+                print(f"     {r.ticker}: enter on breakout above ${pivot:.2f}")
     else:
         if near_miss_ff:
             print(f"  >> The near-misses with TT+VCP pass are your best candidates.")
