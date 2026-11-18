@@ -457,6 +457,16 @@ class MinerviniFundamentalResult:
 FundamentalFilterResult = MinerviniFundamentalResult
 
 
+def _extract_series(df: pd.DataFrame | None, label: str) -> pd.Series:
+    """Extract a single line-item row from a quarterly-financials DataFrame.
+
+    Returns the Series sorted oldest-first, or empty Series if missing.
+    """
+    if df is None or df.empty or label not in df.index:
+        return pd.Series()
+    return df.loc[label].dropna().astype(float).sort_index()
+
+
 class MinerviniFundamentalEngine:
     """5-dimension fundamental engine based on Mark Minervini's criteria.
 
@@ -479,12 +489,13 @@ class MinerviniFundamentalEngine:
         Never raises — missing data produces ``passed=False`` with a clear
         detail string.
         """
-        revenues, earnings = DataIngestion.fetch_quarterly_financials(ticker)
-        rev_series = revenues     # pd.Series, oldest-first
-        ear_series = earnings
-
-        # Fetch EPS and Gross Profit from a fresh call
-        eps_series, gp_series, oi_series = self._fetch_extra_metrics(ticker)
+        # Single yfinance call for all quarterly line items
+        qf = yf.Ticker(ticker).quarterly_financials
+        rev_series = _extract_series(qf, "Total Revenue")
+        ear_series = _extract_series(qf, "Net Income")
+        if ear_series.empty:
+            ear_series = _extract_series(qf, "Net Earnings")
+        eps_series, gp_series = self._fetch_extra_metrics(qf)
 
         # Compute each dimension
         eps_growth = self._eval_eps_growth(eps_series)
@@ -528,17 +539,14 @@ class MinerviniFundamentalEngine:
     # ------------------------------------------------------------------
     @staticmethod
     def _fetch_extra_metrics(
-        ticker: str,
-    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
-        """Fetch EPS, Gross Profit, and Operating Income from quarterly financials."""
+        qf: pd.DataFrame,
+    ) -> Tuple[pd.Series, pd.Series]:
+        """Extract EPS and Gross Profit from a quarterly-financials DataFrame."""
         eps = pd.Series()
         gp = pd.Series()
-        oi = pd.Series()
         try:
-            t = yf.Ticker(ticker)
-            qf = t.quarterly_financials
             if qf is None or qf.empty:
-                return eps, gp, oi
+                return eps, gp
 
             if "Basic EPS" in qf.index:
                 eps = qf.loc["Basic EPS"].dropna().astype(float).sort_index()
@@ -548,13 +556,10 @@ class MinerviniFundamentalEngine:
             if "Gross Profit" in qf.index:
                 gp = qf.loc["Gross Profit"].dropna().astype(float).sort_index()
 
-            if "Operating Income" in qf.index:
-                oi = qf.loc["Operating Income"].dropna().astype(float).sort_index()
-
         except Exception as exc:
-            logger.warning("_fetch_extra_metrics(%s) failed: %s", ticker, exc)
+            logger.warning("_fetch_extra_metrics failed: %s", exc)
 
-        return eps, gp, oi
+        return eps, gp
 
     # ------------------------------------------------------------------
     @staticmethod
