@@ -102,14 +102,24 @@ Four rules validated on daily OHLCV data:
 
 All SMAs are simple moving averages (not exponential), matching Minervini's published logic. The slope is calculated via ordinary least squares over the last 20 trading days.
 
-### Fundamental Acceleration Filter (O'Neil — CAN SLIM "A")
+### Minervini Fundamental Engine (5-Dimension)
 
-Retrieves quarterly Total Revenue from `yfinance.Ticker.quarterly_financials` and computes year-over-year growth by comparing each quarter to the same quarter four periods back:
+Based on Mark Minervini's fundamental analysis criteria from *Think and Trade Like a Champion*.
+All data is extracted from `yfinance` quarterly financials in a single call.
 
-- **≥ 6 quarters (≥ 2 YoY comparisons):** latest YoY growth must exceed prior YoY growth *and* both must exceed 20%.
-- **5 quarters (1 YoY comparison):** latest YoY growth must exceed 20%.
+| # | Dimension | Source | Threshold |
+|---|-----------|--------|-----------|
+| 1 | **EPS growth** | Basic EPS (or Diluted EPS) | YoY ≥ 15% / QoQ ≥ 25% |
+| 2 | **EPS acceleration** | Same EPS series | Growth rate increasing across consecutive periods |
+| 3 | **Revenue growth** | Total Revenue | YoY ≥ 15% / QoQ ≥ 25% |
+| 4 | **Revenue acceleration** | Same revenue series | Growth rate increasing across consecutive periods |
+| 5 | **Profit margin improvement** | Gross Profit / Total Revenue + Net Income / Total Revenue | Upward trend across 3+ quarters, ≥ 1pp improvement |
 
-Missing quarterly data produces a `passed=False` with `revenue_available=False` — a clean fallback flag rather than a crash.
+**Scoring:** Each dimension is independently evaluated. The default approval threshold is
+**3 out of 5** dimensions passing. Configure via `MinerviniFundamentalEngine(min_score=N)`.
+
+**Edge cases:** Missing quarterly data produces `passed=False` with a clear reason. The
+engine never crashes — it reports what data is available and scores accordingly.
 
 ### VCP Engine (Minervini)
 
