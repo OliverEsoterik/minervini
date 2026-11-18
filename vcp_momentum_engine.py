@@ -408,6 +408,63 @@ class FundamentalFilterResult:
     details: str = ""
 
 
+@dataclass
+class MetricResult:
+    """Result for one fundamental dimension (EPS, revenue, margin, etc.)."""
+    label: str                       # e.g. "EPS growth (YoY)"
+    passed: bool                     # meets threshold?
+    value: Optional[float] = None    # growth rate / margin % (as decimal, e.g. 0.22)
+    threshold: Optional[float] = None
+    quarters: List[float] = field(default_factory=list)
+    detail: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "label": self.label,
+            "passed": self._to_native(self.passed),
+            "value": round(self._to_native(self.value), 4) if self.value is not None else None,
+            "threshold": self.threshold,
+            "detail": self.detail,
+        }
+
+    @staticmethod
+    def _to_native(v: Any) -> Any:
+        if isinstance(v, (np.floating,)):
+            return float(v)
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, (np.bool_,)):
+            return bool(v)
+        return v
+
+
+@dataclass
+class MinerviniFundamentalResult:
+    """Aggregate result of the 5-dimension Minervini fundamental check."""
+    ticker: str
+    eps_growth: MetricResult
+    eps_acceleration: MetricResult
+    revenue_growth: MetricResult
+    revenue_acceleration: MetricResult
+    profit_margin: MetricResult
+    score: int = 0
+    total_dims: int = 5
+    overall_passed: bool = False
+    details: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "overall_passed": self.overall_passed,
+            "score": self.score,
+            "total_dims": self.total_dims,
+            "eps_growth": self.eps_growth.to_dict(),
+            "eps_acceleration": self.eps_acceleration.to_dict(),
+            "revenue_growth": self.revenue_growth.to_dict(),
+            "revenue_acceleration": self.revenue_acceleration.to_dict(),
+            "profit_margin": self.profit_margin.to_dict(),
+        }
+
+
 class FundamentalFilter:
     """Year-over-year revenue / earnings acceleration filter.
 
