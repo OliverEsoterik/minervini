@@ -452,15 +452,16 @@ class MetricResult:
 
 @dataclass
 class MinerviniFundamentalResult:
-    """Aggregate result of the 5-dimension Minervini fundamental check."""
+    """Aggregate result of the 6-dimension Minervini fundamental check."""
     ticker: str
     eps_growth: MetricResult
     eps_acceleration: MetricResult
     revenue_growth: MetricResult
     revenue_acceleration: MetricResult
     profit_margin: MetricResult
+    roe: MetricResult          # NEW
     score: int = 0
-    total_dims: int = 5
+    total_dims: int = 6        # CHANGED: 5 → 6
     overall_passed: bool = False
     details: str = ""
 
@@ -474,6 +475,7 @@ class MinerviniFundamentalResult:
             "revenue_growth": self.revenue_growth.to_dict(),
             "revenue_acceleration": self.revenue_acceleration.to_dict(),
             "profit_margin": self.profit_margin.to_dict(),
+            "roe": self.roe.to_dict(),
         }
 
 
@@ -489,10 +491,11 @@ def _extract_series(df: pd.DataFrame | None, label: str) -> pd.Series:
 
 
 class MinerviniFundamentalEngine:
-    """5-dimension fundamental engine based on Mark Minervini's criteria.
+    """6-dimension fundamental engine based on Mark Minervini's criteria.
 
     Evaluates EPS growth, EPS acceleration, revenue growth, revenue
-    acceleration, and profit margin improvement from quarterly financials.
+    acceleration, profit margin improvement, and ROE from quarterly
+    financials.
     """
 
     YOY_THRESHOLD: float = 0.15    # 15 %
@@ -524,6 +527,7 @@ class MinerviniFundamentalEngine:
                 revenue_growth=MetricResult(label="Revenue growth", passed=False, detail="yfinance error"),
                 revenue_acceleration=MetricResult(label="Revenue acceleration", passed=False, detail="yfinance error"),
                 profit_margin=MetricResult(label="Profit margin", passed=False, detail="yfinance error"),
+                roe=MetricResult(label="Return on Equity (ROE)", passed=False, detail="yfinance error"),
                 score=0,
                 total_dims=0,
                 overall_passed=False,
@@ -541,8 +545,9 @@ class MinerviniFundamentalEngine:
         rev_growth = self._eval_revenue_growth(rev_series)
         rev_accel = self._eval_revenue_acceleration(rev_series)
         margin = self._eval_profit_margin(gp_series, ear_series, rev_series)
+        roe = self._eval_roe(ticker)      # NEW
 
-        dims = [eps_growth, eps_accel, rev_growth, rev_accel, margin]
+        dims = [eps_growth, eps_accel, rev_growth, rev_accel, margin, roe]  # CHANGED: +roe
         score = sum(1 for d in dims if d.passed)
         # Total dimensions in the engine (fixed denominator — missing data counts as fail)
         total = len(dims)
@@ -553,6 +558,7 @@ class MinerviniFundamentalEngine:
             f"  Rev growth:       {'✅' if rev_growth.passed else '❌'} {rev_growth.detail}",
             f"  Rev acceleration: {'✅' if rev_accel.passed else '❌'} {rev_accel.detail}",
             f"  Profit margin:    {'✅' if margin.passed else '❌'} {margin.detail}",
+            f"  ROE:              {'✅' if roe.passed else '❌'} {roe.detail}",   # NEW
             f"  Score: {score}/{total} passed",
         ]
         overall = score >= self.min_score
@@ -570,11 +576,99 @@ class MinerviniFundamentalEngine:
             revenue_growth=rev_growth,
             revenue_acceleration=rev_accel,
             profit_margin=margin,
+            roe=roe,             # NEW
             score=score,
             total_dims=total,
             overall_passed=overall,
             details="\n".join(detail_lines),
         )
+
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _eval_roe(ticker: str) -> MetricResult:
+        """Compute Return on Equity and check against 17% threshold.
+
+        ROE = Trailing 12-month Net Income / Latest Stockholders Equity
+
+        Uses quarterly balance sheet for equity and quarterly financials
+        for net income, both from yfinance.
+        """
+        ROE_THRESHOLD = 0.17  # 17%
+
+        try:
+            t = yf.Ticker(ticker)
+
+            # Get net income from quarterly financials
+            qf = t.quarterly_financials
+            if qf is None or qf.empty or "Net Income" not in qf.index:
+                return MetricResult(
+                    label="Return on Equity (ROE)",
+                    passed=False,
+                    detail="No net income data available.",
+                )
+
+            ni = qf.loc["Net Income"].dropna().astype(float)
+            if len(ni) < 4:
+                return MetricResult(
+                    label="Return on Equity (ROE)",
+                    passed=False,
+                    detail=f"Need \u22654 quarters of net income, got {len(ni)}.",
+                )
+
+            trailing_ni = float(ni.tail(4).sum())
+
+            # Get stockholders' equity from quarterly balance sheet
+            qbs = t.quarterly_balance_sheet
+            if qbs is None or qbs.empty or "Stockholders Equity" not in qbs.index:
+                # Fall back to annual balance sheet
+                bs = t.balance_sheet
+                if bs is None or bs.empty or "Stockholders Equity" not in bs.index:
+                    return MetricResult(
+                        label="Return on Equity (ROE)",
+                        passed=False,
+                        detail="No stockholders' equity data available.",
+                    )
+                equity = float(bs.loc["Stockholders Equity"].dropna().iloc[-1])
+            else:
+                equity_series = qbs.loc["Stockholders Equity"].dropna()
+                if equity_series.empty:
+                    return MetricResult(
+                        label="Return on Equity (ROE)",
+                        passed=False,
+                        detail="Stockholders equity series is empty.",
+                    )
+                equity = float(equity_series.iloc[-1])
+
+            if equity <= 0:
+                return MetricResult(
+                    label="Return on Equity (ROE)",
+                    passed=False,
+                    detail=f"Non-positive equity: {equity}.",
+                )
+
+            roe = trailing_ni / equity
+            passed = roe >= ROE_THRESHOLD
+
+            return MetricResult(
+                label="Return on Equity (ROE)",
+                passed=passed,
+                value=roe,
+                threshold=ROE_THRESHOLD,
+                detail=(
+                    f"{roe*100:.2f}% {'\u2265' if passed else '<'} "
+                    f"{ROE_THRESHOLD*100:.0f}% "
+                    f"(NI={trailing_ni:.0f}, EQ={equity:.0f})"
+                ),
+            )
+
+        except Exception as exc:
+            logger.warning("ROE check failed for %s: %s", ticker, exc)
+            return MetricResult(
+                label="Return on Equity (ROE)",
+                passed=False,
+                detail=f"Error: {exc}",
+            )
 
     # ------------------------------------------------------------------
     @staticmethod
