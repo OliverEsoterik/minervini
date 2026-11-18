@@ -244,7 +244,7 @@ class RSModule:
         """Rank weighted returns into percentiles 0-99.
 
         The ticker with the highest return gets RS = 99.0
-        The ticker with the lowest return gets RS = 0.0
+        The ticker with the lowest return gets RS = 99/n (approaches 0.0 as universe grows)
         Ties share the same percentile.
 
         Parameters
@@ -278,11 +278,18 @@ class RSModule:
         n = len(sorted_tickers)
 
         ranks: Dict[str, float] = {}
-        for i, ticker in enumerate(sorted_tickers):
-            # Percentile: top stock = 99, bottom = 0
-            # Formula: (N - rank_position) / N * 99
+        i = 0
+        while i < n:
+            # Find all tickers in this tie group
+            group_returns = valid[sorted_tickers[i]]
+            j = i
+            while j < n and valid[sorted_tickers[j]] == group_returns:
+                j += 1
+            # Same percentile for the whole group
             percentile = (n - i) / n * 99
-            ranks[ticker] = round(percentile, 1)
+            for k in range(i, j):
+                ranks[sorted_tickers[k]] = round(percentile, 1)
+            i = j  # Skip ahead by group size
 
         logger.info(
             "RS ranking complete: %d tickers ranked (best=%.1f, worst=%.1f)",
