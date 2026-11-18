@@ -60,7 +60,6 @@ VCP_LOOKBACK_DAYS: int = 75       # conservative buffer around 60 trading days
 TREND_SLOPE_WINDOW: int = 20      # trading days for SMA slope check
 DEFAULT_EQUITY: float = 100_000.0
 DEFAULT_RISK_PCT: float = 0.003   # 0.3 % max risk per trade
-BASELINE_GROWTH_THRESHOLD: float = 0.20  # 20 % minimum YoY growth
 VOLUME_DRYUP_THRESHOLD: float = 0.75     # < 75 % of 20-d volume SMA
 
 
