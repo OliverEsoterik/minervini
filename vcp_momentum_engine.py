@@ -498,8 +498,8 @@ class MinerviniFundamentalEngine:
     financials.
     """
 
-    YOY_THRESHOLD: float = 0.15    # 15 %
-    QOQ_THRESHOLD: float = 0.25    # 25 %
+    YOY_THRESHOLD: float = 0.20    # 20 %
+    QOQ_THRESHOLD: float = 0.30    # 30 %
     MIN_MARGIN_IMPROVEMENT_PP: float = 0.01  # 1 percentage point
 
     def __init__(self, min_score: int = 3) -> None:
@@ -724,11 +724,11 @@ class MinerviniFundamentalEngine:
         # Prefer YoY (≥ 5 quarters)
         if len(vals) >= 5:
             latest = (vals[-1] - vals[-5]) / vals[-5] if vals[-5] > 0 else 0.0
-            threshold = 0.15
+            threshold = 0.20
             mode = "YoY"
         else:
             latest = (vals[-1] - vals[-2]) / vals[-2] if vals[-2] > 0 else 0.0
-            threshold = 0.25
+            threshold = 0.30
             mode = "QoQ"
 
         passed = latest >= threshold
@@ -743,35 +743,116 @@ class MinerviniFundamentalEngine:
 
     # ------------------------------------------------------------------
     @staticmethod
+    @staticmethod
     def _eval_eps_acceleration(eps: pd.Series) -> MetricResult:
-        """Check if EPS YoY growth rate is accelerating."""
-        if len(eps) < 6:
+        """Check if EPS growth rate is accelerating.
+
+        Three tiers based on data availability:
+        1. ≥ 6 quarters: YoY acceleration (current logic)
+        2. Exactly 5 quarters: Single YoY rate, pass if ≥ 25%% (strong growth proxy)
+        3. 4 quarters: QoQ sequential slope, pass if trend positive
+        """
+        if len(eps) < 4:
             return MetricResult(
                 label="EPS acceleration",
                 passed=False,
-                detail="Insufficient data (need ≥ 6 quarters).",
+                detail="Insufficient data (need ≥ 4 quarters).",
             )
 
-        rates = MinerviniFundamentalEngine._compute_yoy_growth(eps)
-        if len(rates) < 2:
+        vals = eps.values
+
+        # Tier 1: ≥ 6 quarters — full YoY acceleration check
+        if len(vals) >= 6:
+            rates = MinerviniFundamentalEngine._compute_yoy_growth(eps)
+            if len(rates) < 2:
+                return MetricResult(
+                    label="EPS acceleration",
+                    passed=False,
+                    detail="Insufficient YoY comparisons.",
+                )
+            latest = rates[-1]
+            prior = rates[-2]
+            accelerating = latest > prior
+            # Also require that the latest rate is at least 10%%
+            # (prevents 2%% → 5%% from being "accelerating")
+            accelerating = accelerating and latest >= 0.10
+            return MetricResult(
+                label="EPS acceleration",
+                passed=accelerating,
+                value=latest,
+                threshold=prior,
+                quarters=[float(r) for r in rates],
+                detail=(
+                    f"{latest*100:+.2f}%% → {prior*100:+.2f}%% "
+                    f"{'accelerating' if accelerating else 'decelerating'}"
+                ),
+            )
+
+        # Tier 2: Exactly 5 quarters — single YoY rate
+        # We can compute one YoY comparison: (Q5 - Q1) / Q1
+        # If the absolute growth rate is ≥ 25%%, treat as implicitly accelerating
+        if len(vals) >= 5:
+            prev = vals[0]
+            curr = vals[-1]
+            if prev <= 0:
+                return MetricResult(
+                    label="EPS acceleration",
+                    passed=False,
+                    detail=f"Prior-year EPS non-positive ({prev}), cannot compute YoY.",
+                )
+            yoy_rate = (curr - prev) / prev
+            ACCEL_PROXY_THRESHOLD = MinerviniFundamentalEngine.YOY_THRESHOLD
+            passed = yoy_rate >= ACCEL_PROXY_THRESHOLD
+            return MetricResult(
+                label="EPS acceleration (proxy)",
+                passed=passed,
+                value=yoy_rate,
+                threshold=ACCEL_PROXY_THRESHOLD,
+                quarters=[float(v) for v in vals],
+                detail=(
+                    f"{yoy_rate*100:+.2f}%% YoY {'≥' if passed else '<'} "
+                    f"{ACCEL_PROXY_THRESHOLD*100:.0f}%% (proxy, 5 qtrs)"
+                ),
+            )
+
+        # Tier 3: 4 quarters — QoQ sequential acceleration
+        # Compute 3 QoQ growth rates, check if slope > 0
+        qoq_rates = []
+        for i in range(1, len(vals)):
+            if vals[i-1] > 0:
+                qoq_rates.append((vals[i] - vals[i-1]) / vals[i-1])
+            else:
+                qoq_rates.append(0.0)
+
+        if len(qoq_rates) < 2:
             return MetricResult(
                 label="EPS acceleration",
                 passed=False,
-                detail="Insufficient YoY comparisons.",
+                detail="Insufficient QoQ comparisons.",
             )
 
-        latest = rates[-1]
-        prior = rates[-2]
-        accelerating = latest > prior
+        # Linear regression slope on QoQ rates
+        y = np.array(qoq_rates, dtype=float)
+        x = np.arange(len(y))
+        n_ = float(len(y))
+        sum_x = x.sum()
+        sum_y = y.sum()
+        sum_xy = (x * y).sum()
+        sum_xx = (x * x).sum()
+        denom = n_ * sum_xx - sum_x * sum_x
+        slope = (n_ * sum_xy - sum_x * sum_y) / denom if abs(denom) > 1e-15 else 0.0
+        accelerating = slope > 0
+
         return MetricResult(
-            label="EPS acceleration",
+            label="EPS acceleration (QoQ)",
             passed=accelerating,
-            value=latest,
-            threshold=prior,
-            quarters=[float(r) for r in rates],
+            value=float(qoq_rates[-1]),
+            threshold=float(qoq_rates[0]),
+            quarters=[float(r) for r in qoq_rates],
             detail=(
-                f"{latest*100:+.2f}% → {prior*100:+.2f}% "
-                f"{'accelerating' if accelerating else 'decelerating'}"
+                f"QoQ slope {slope:+.4f} "
+                f"{'accelerating' if accelerating else 'decelerating'} "
+                f"(4 qtrs)"
             ),
         )
 
@@ -788,11 +869,11 @@ class MinerviniFundamentalEngine:
         vals = rev.values
         if len(vals) >= 5:
             latest = (vals[-1] - vals[-5]) / vals[-5] if vals[-5] > 0 else 0.0
-            threshold = 0.15
+            threshold = 0.20
             mode = "YoY"
         else:
             latest = (vals[-1] - vals[-2]) / vals[-2] if vals[-2] > 0 else 0.0
-            threshold = 0.25
+            threshold = 0.30
             mode = "QoQ"
 
         passed = latest >= threshold
@@ -807,35 +888,106 @@ class MinerviniFundamentalEngine:
 
     # ------------------------------------------------------------------
     @staticmethod
+    @staticmethod
     def _eval_revenue_acceleration(rev: pd.Series) -> MetricResult:
-        """Check if revenue YoY growth rate is accelerating."""
-        if len(rev) < 6:
+        """Check if revenue growth rate is accelerating.
+
+        Same three-tier logic as ``_eval_eps_acceleration``.
+        """
+        if len(rev) < 4:
             return MetricResult(
                 label="Revenue acceleration",
                 passed=False,
-                detail="Insufficient data (need ≥ 6 quarters).",
+                detail="Insufficient data (need ≥ 4 quarters).",
             )
 
-        rates = MinerviniFundamentalEngine._compute_yoy_growth(rev)
-        if len(rates) < 2:
+        vals = rev.values
+
+        # Tier 1: ≥ 6 quarters — full YoY acceleration
+        if len(vals) >= 6:
+            rates = MinerviniFundamentalEngine._compute_yoy_growth(rev)
+            if len(rates) < 2:
+                return MetricResult(
+                    label="Revenue acceleration",
+                    passed=False,
+                    detail="Insufficient YoY comparisons.",
+                )
+            latest = rates[-1]
+            prior = rates[-2]
+            accelerating = latest > prior and latest >= 0.10
+            return MetricResult(
+                label="Revenue acceleration",
+                passed=accelerating,
+                value=latest,
+                threshold=prior,
+                quarters=[float(r) for r in rates],
+                detail=(
+                    f"{latest*100:+.2f}% → {prior*100:+.2f}% "
+                    f"{'accelerating' if accelerating else 'decelerating'}"
+                ),
+            )
+
+        # Tier 2: Exactly 5 quarters — single YoY rate
+        if len(vals) >= 5:
+            prev = vals[0]
+            curr = vals[-1]
+            if prev <= 0:
+                return MetricResult(
+                    label="Revenue acceleration",
+                    passed=False,
+                    detail=f"Prior-year revenue non-positive ({prev}), cannot compute YoY.",
+                )
+            yoy_rate = (curr - prev) / prev
+            ACCEL_PROXY_THRESHOLD = MinerviniFundamentalEngine.YOY_THRESHOLD
+            passed = yoy_rate >= ACCEL_PROXY_THRESHOLD
+            return MetricResult(
+                label="Revenue acceleration (proxy)",
+                passed=passed,
+                value=yoy_rate,
+                threshold=ACCEL_PROXY_THRESHOLD,
+                quarters=[float(v) for v in vals],
+                detail=(
+                    f"{yoy_rate*100:+.2f}% YoY {'≥' if passed else '<'} "
+                    f"{ACCEL_PROXY_THRESHOLD*100:.0f}% (proxy, 5 qtrs)"
+                ),
+            )
+
+        # Tier 3: 4 quarters — QoQ sequential acceleration
+        qoq_rates = []
+        for i in range(1, len(vals)):
+            if vals[i-1] > 0:
+                qoq_rates.append((vals[i] - vals[i-1]) / vals[i-1])
+            else:
+                qoq_rates.append(0.0)
+
+        if len(qoq_rates) < 2:
             return MetricResult(
                 label="Revenue acceleration",
                 passed=False,
-                detail="Insufficient YoY comparisons.",
+                detail="Insufficient QoQ comparisons.",
             )
 
-        latest = rates[-1]
-        prior = rates[-2]
-        accelerating = latest > prior
+        y = np.array(qoq_rates, dtype=float)
+        x = np.arange(len(y))
+        n_ = float(len(y))
+        sum_x = x.sum()
+        sum_y = y.sum()
+        sum_xy = (x * y).sum()
+        sum_xx = (x * x).sum()
+        denom = n_ * sum_xx - sum_x * sum_x
+        slope = (n_ * sum_xy - sum_x * sum_y) / denom if abs(denom) > 1e-15 else 0.0
+        accelerating = slope > 0
+
         return MetricResult(
-            label="Revenue acceleration",
+            label="Revenue acceleration (QoQ)",
             passed=accelerating,
-            value=latest,
-            threshold=prior,
-            quarters=[float(r) for r in rates],
+            value=float(qoq_rates[-1]),
+            threshold=float(qoq_rates[0]),
+            quarters=[float(r) for r in qoq_rates],
             detail=(
-                f"{latest*100:+.2f}% → {prior*100:+.2f}% "
-                f"{'accelerating' if accelerating else 'decelerating'}"
+                f"QoQ slope {slope:+.4f} "
+                f"{'accelerating' if accelerating else 'decelerating'} "
+                f"(4 qtrs)"
             ),
         )
 
@@ -985,8 +1137,12 @@ class VCPEngine:
         # --- 3. Volume dry-up ----------------------------------------
         volume_ratio, dryup = self._volume_dryup(df)
 
-        # --- 4. VCP heuristic ----------------------------------------
-        vcp_detected, detail = self._vcp_heuristic(contractions, atr_pct, dryup)
+        # --- 4. VCP heuristic (last 4 contractions only) ----------
+        # Older contractions represent historical swings, not the
+        # current tightening pattern. The VCP must form in the
+        # most recent price action.
+        recent = contractions[-4:] if len(contractions) > 4 else contractions
+        vcp_detected, detail = self._vcp_heuristic(recent, atr_pct, dryup)
 
         latest_con = contractions[-1]["range_pct"] if contractions else None
 
@@ -1010,25 +1166,94 @@ class VCPEngine:
     # ------------------------------------------------------------------
     @staticmethod
     def _find_peaks_troughs(df: pd.DataFrame) -> List[Tuple[int, str, float]]:
-        """Locate alternating swing highs and swing lows.
+        """Locate meaningful swing highs and swing lows.
 
-        Return list of (index_pos, type, price) where type is "peak" or
-        "trough".  Uses a simple local-extrema scan over the Close series.
+        A swing high is a bar whose Close is the highest of the 5 bars before
+        AND 5 bars after it. A swing low is the lowest under the same window.
+        Only swings with price retracement > 5%% from the prior opposite swing
+        are retained. This eliminates the noise of 3-bar extrema detection.
+
+        Returns list of (index_pos, type, price) with alternating types.
         """
         close = df["Close"].values
         n = len(close)
-        if n < 3:
+        if n < 11:  # Need at least 5+1+5 = 11 bars for a meaningful swing
             return []
 
-        events: List[Tuple[int, str, float]] = []
-        # Always start with the first data point as a reference
-        for i in range(1, n - 1):
-            if close[i] > close[i - 1] and close[i] > close[i + 1]:
-                events.append((i, "peak", close[i]))
-            elif close[i] < close[i - 1] and close[i] < close[i + 1]:
-                events.append((i, "trough", close[i]))
+        window = 5  # bars before/after to check
 
-        return events
+        # Find ALL swing highs and lows (candidates) using 5-bar window
+        raw_peaks: List[Tuple[int, float]] = []
+        raw_troughs: List[Tuple[int, float]] = []
+
+        for i in range(window, n - window):
+            # Swing high: close[i] is highest in [i-window, i+window]
+            is_peak = True
+            for j in range(i - window, i + window + 1):
+                if j == i:
+                    continue
+                if close[j] >= close[i]:
+                    is_peak = False
+                    break
+            if is_peak:
+                raw_peaks.append((i, close[i]))
+
+            # Swing low: close[i] is lowest in [i-window, i+window]
+            is_trough = True
+            for j in range(i - window, i + window + 1):
+                if j == i:
+                    continue
+                if close[j] <= close[i]:
+                    is_trough = False
+                    break
+            if is_trough:
+                raw_troughs.append((i, close[i]))
+
+        # Merge into alternating sequence starting with the first event type
+        events: List[Tuple[int, str, float]] = []
+        p_idx, t_idx = 0, 0
+
+        while p_idx < len(raw_peaks) and t_idx < len(raw_troughs):
+            if raw_peaks[p_idx][0] < raw_troughs[t_idx][0]:
+                events.append((raw_peaks[p_idx][0], "peak", raw_peaks[p_idx][1]))
+                p_idx += 1
+            else:
+                events.append((raw_troughs[t_idx][0], "trough", raw_troughs[t_idx][1]))
+                t_idx += 1
+
+        while p_idx < len(raw_peaks):
+            events.append((raw_peaks[p_idx][0], "peak", raw_peaks[p_idx][1]))
+            p_idx += 1
+        while t_idx < len(raw_troughs):
+            events.append((raw_troughs[t_idx][0], "trough", raw_troughs[t_idx][1]))
+            t_idx += 1
+
+        # Remove consecutive duplicates (two peaks or two troughs in a row)
+        filtered: List[Tuple[int, str, float]] = []
+        for ev in events:
+            if filtered and filtered[-1][1] == ev[1]:
+                # Keep the more extreme one
+                if ev[1] == "peak" and ev[2] > filtered[-1][2]:
+                    filtered[-1] = ev
+                elif ev[1] == "trough" and ev[2] < filtered[-1][2]:
+                    filtered[-1] = ev
+            else:
+                filtered.append(ev)
+
+        # Minimum retracement filter: each swing must differ from the prior
+        # opposite swing by at least 5%% of the prior swing's price
+        MIN_RETRACEMENT_PCT = 5.0
+        result: List[Tuple[int, str, float]] = []
+        for ev in filtered:
+            if not result:
+                result.append(ev)
+                continue
+            prev = result[-1]
+            change_pct = abs(ev[2] - prev[2]) / prev[2] * 100
+            if change_pct >= MIN_RETRACEMENT_PCT:
+                result.append(ev)
+
+        return result
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -1124,36 +1349,76 @@ class VCPEngine:
             2. Followed by tighter contractions of **8–12 %**.
             3. Culminating in a tight consolidation **< 8 %**.
 
-        We relax the fixed bands slightly for real-market noise: we look for
-        a *declining* trend in drawdown magnitudes.
+        We check for a declining trend in ANY consecutive subset of the
+        most recent contractions (at least 2), with the first contraction
+        in that subset >= 8%%.
         """
         if len(contractions) < 2:
             return False, "Fewer than 2 contraction events."
 
         magnitudes = [c["range_pct"] for c in contractions]
 
-        # Check for general declining trend
-        # We expect at least the last contraction to be smaller than the first
-        declining = magnitudes[-1] < magnitudes[0] * 0.85  # at least 15% tighter
+        # Scan all subsets of 2+ consecutive contractions from the
+        # most-recent end of the sequence.  A VCP can start anywhere
+        # in the 75-day window — earlier swings may be historical noise.
+        #
+        # For each subset we check:
+        #   1. First contraction >= 8% (meaningful initial pullback)
+        #   2. Last contraction < first * 0.85 (at least 15% tighter)
+        #   3. Last contraction < 10% (tight enough)
+        #
+        # If any subset satisfies all three, the VCP is valid.
+        found = False
+        best_detail = "No VCP signal."
 
-        # Last consolidation < 10 % (relaxed from 8 % for robustness)
-        tight = magnitudes[-1] < 10.0
+        for start in range(len(magnitudes)):
+            for end in range(start + 1, len(magnitudes)):
+                subset = magnitudes[start:end + 1]
+                if len(subset) < 2:
+                    continue
+                first = subset[0]
+                last = subset[-1]
 
-        # ATR compression < 3 % (tight range suggests low volatility)
-        compressed = atr_pct < 4.0
+                # Meaningful initial pullback (>= 6% for tight VCP / bull flag)
+                if first < 6.0:
+                    continue
 
-        parts: List[str] = []
-        if declining:
-            parts.append("contractions declining")
-        if tight:
-            parts.append(f"final consolidation {magnitudes[-1]:.1f}% < 10%")
-        if compressed:
-            parts.append(f"ATR {atr_pct:.2f}% < 4%")
-        if volume_dryup:
-            parts.append("volume dry-up detected")
+                # Last must be at least 15%% tighter than first
+                if not (last < first * 0.85):
+                    continue
 
-        detected = declining and tight and compressed
-        return detected, "; ".join(parts) if parts else "No VCP signal."
+                # Last must be tight enough
+                if not (last < 10.0):
+                    continue
+
+                # All conditions met for this subset
+                ATR_CONDITION = ""
+                VOLUME_CONDITION = ""
+
+                parts = []
+                parts.append(f"contractions declining ({len(subset)} swings)")
+                parts.append(f"final consolidation {last:.1f}%% < 10%%")
+                if atr_pct < 4.0:
+                    parts.append(f"ATR {atr_pct:.2f}%% < 4%%")
+                if volume_dryup:
+                    parts.append("volume dry-up detected")
+
+                found = True
+                best_detail = "; ".join(parts)
+                # Don't break — keep scanning for the best subset
+                # (later subsets with more contractions are preferred)
+
+        if found:
+            return True, best_detail
+
+        # If no declining subset found, return the reason for the
+        # one with the largest first pullback (most likely VCP candidate)
+        if magnitudes[0] < 6.0:
+            return False, (
+                f"Initial pullback {magnitudes[0]:.1f}%% < 6%% "
+                f"— not a meaningful contraction start."
+            )
+        return False, "No VCP signal."
 
 
 # ===================================================================
@@ -1444,7 +1709,7 @@ class Pipeline:
     ) -> None:
         self.ingestion = DataIngestion()
         self.trend = TrendTemplateValidator()
-        self.fundamental = MinerviniFundamentalEngine(min_score=3)
+        self.fundamental = MinerviniFundamentalEngine(min_score=4)
         self.vcp = VCPEngine()
         self.risk = RiskManager(equity=equity, risk_pct=risk_pct)
 
@@ -1481,7 +1746,27 @@ class Pipeline:
             return result
         result.ohlcv_data = data
 
-        # ---- 2. Trend Template --------------------------------------
+        # ---- 0b. 52-Week High Proximity Gate ------------------------------
+        # Reject if price is > 25% below the 52-week high
+        close = float(data.close.iloc[-1])
+        info_52 = DataIngestion.fetch_info(ticker)
+        high_52 = info_52.get("fiftyTwoWeekHigh")
+        if high_52 is not None and high_52 > 0:
+            pct_off_high = (high_52 - close) / high_52 * 100
+            if pct_off_high > 25.0:
+                result.error = (
+                    f"Price ${close:.2f} is {pct_off_high:.1f}% below "
+                    f"52-week high ${high_52:.2f} (max allowed: 25%)"
+                )
+                logger.info(
+                    "52-week high gate [%s]: FAIL — %.1f%% below high",
+                    ticker, pct_off_high,
+                )
+                return result
+            logger.info(
+                "52-week high gate [%s]: PASS (%.1f%% below high)",
+                ticker, pct_off_high,
+            )
         trend_result = self.trend.validate(data)
         result.trend_template = trend_result
 
