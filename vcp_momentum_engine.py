@@ -283,24 +283,28 @@ class TrendTemplateResult:
     sma_200_slope: float
     sma_150: Optional[float] = None     # 150-day SMA (current value)
     sma_150_slope: Optional[float] = None  # slope of 150-day SMA
+    low_52: Optional[float] = None       # 52-week low (data range min)
+    pct_above_low_52: Optional[float] = None  # % above 52-week low
     details: str = ""
 
 
 class TrendTemplateValidator:
     """Minervini Trend Template — structural bull-market pre-screen.
 
-    Rules
-    -----
+    Rules (Minervini 8-point Trend Template)
+    -----------------------------------------
     1. Current closing price > 50-day SMA.
     2. Current closing price > 150-day SMA.
-    3. 50-day SMA > 150-day SMA.
-    4. 150-day SMA > 200-day SMA.
-    5. Both the 50-day and 200-day SMAs are sloping *upward* over a
-       lookback window of **TREND_SLOPE_WINDOW** trading days (~1 month).
+    3. Current closing price > 200-day SMA.
+    4. 50-day SMA > 150-day SMA.
+    5. 150-day SMA > 200-day SMA.
+    6. 50-day SMA sloping *upward* over a lookback window of
+       **TREND_SLOPE_WINDOW** trading days (~1 month).
+    7. 200-day SMA sloping *upward* over a similar window.
+    8. Current closing price is at least 25% above the 52-week low.
 
-    This implements the full 3-step MA chain (50 > 150 > 200) per
-    Minervini's Trend Template, closing the gap where SMA-150 hasn't
-    crossed SMA-200 yet.
+    This implements Minervini's full 8-point Trend Template per
+    *Trade Like a Stock Market Wizard* and *The Mind of the Market Wizard*.
     """
 
     def __init__(self, slope_window: int = TREND_SLOPE_WINDOW) -> None:
@@ -332,6 +336,10 @@ class TrendTemplateValidator:
         slope_150 = self._slope(sma_150) if len(close) >= 150 else 0.0
         slope_200 = self._slope(sma_200)
 
+        # --- 52-week low proximity (Minervini rule: >= 25% above low) -
+        low_52 = float(close.min())
+        pct_above_low_52 = (latest_close - low_52) / low_52 * 100 if low_52 > 0 else 0.0
+
         # --- evaluate -----------------------------------------------
         checks: List[Tuple[bool, str]] = [
             (
@@ -341,6 +349,10 @@ class TrendTemplateValidator:
             (
                 latest_close > latest_sma_150 if not math.isnan(latest_sma_150) else False,
                 f"Close {latest_close:.2f} > SMA-150 {latest_sma_150:.2f}",
+            ),
+            (
+                latest_close > latest_sma_200,
+                f"Close {latest_close:.2f} > SMA-200 {latest_sma_200:.2f}",
             ),
             (
                 latest_sma_50 > latest_sma_150 if not math.isnan(latest_sma_150) else False,
@@ -361,6 +373,10 @@ class TrendTemplateValidator:
             (
                 slope_200 > 0,
                 f"SMA-200 slope {slope_200:.4f} > 0",
+            ),
+            (
+                pct_above_low_52 >= 25.0,
+                f"Close {latest_close:.2f} is {pct_above_low_52:.1f}% above 52-week low {low_52:.2f} (>= 25%)",
             ),
         ]
 
@@ -384,6 +400,8 @@ class TrendTemplateValidator:
             sma_50_slope=slope_50,
             sma_150_slope=slope_150,
             sma_200_slope=slope_200,
+            low_52=round(low_52, 2),
+            pct_above_low_52=round(pct_above_low_52, 1),
             details=detail,
         )
 
@@ -1160,21 +1178,23 @@ class VCPEngine:
         volume_ratio, dryup = self._volume_dryup(df)
 
         # --- 3b. 52-week high proximity check for VCP -------------------
-        # A VCP must form near the 52-week high.  If the stock is more
-        # than 10%% below its 52-week high, the pattern is not a tight
-        # consolidation near new highs.
+        # The VCP must form near the 52-week high.  The Pipeline already
+        # enforces a 25%% max (matching Minervini's Trend Template).
+        # Using the same 25%% threshold here keeps the gates consistent
+        # so a stock that passes the Trend Template isn't later rejected
+        # by a stricter VCP check.
         full_close = data.close
         high_52 = float(full_close.max())
         current_close = float(df["Close"].iloc[-1])
         pct_off_high = (high_52 - current_close) / high_52 * 100
-        if pct_off_high > 10.0:
+        if pct_off_high > 25.0:
             logger.info(
                 "VCP [%s]: %.1f%%%% below 52-week high $%.2f — no VCP",
                 ticker, pct_off_high, high_52,
             )
             detail = (
                 f"Price {pct_off_high:.1f}%% below 52-week high ${high_52:.2f} "
-                f"(VCP requires <= 10%%)"
+                f"(VCP requires <= 25%%)"
             )
             return VCPResult(
                 ticker=ticker,
@@ -1433,15 +1453,20 @@ class VCPEngine:
             if not (last < first * 0.85):
                 continue
 
-            # Last must be tight enough (< 10%)
-            if not (last < 10.0):
+            # Last must be tight enough (< 12%)
+            # Minervini's classic VCP ends with a 3-5% contraction,
+            # but moderate-volatility stocks may show 10-12%.
+            # The 15%%-tighter-than-first check above is the primary
+            # discriminator — this hard ceiling just excludes patterns
+            # that haven't tightened meaningfully at all.
+            if not (last < 12.0):
                 continue
 
             parts = []
             parts.append(f"contractions declining ({len(subset)} swings)")
-            parts.append(f"final consolidation {last:.1f}%% < 10%%")
+            parts.append(f"final consolidation {last:.1f}% < 12%")
             if atr_pct < 4.0:
-                parts.append(f"ATR {atr_pct:.2f}%% < 4%%")
+                parts.append(f"ATR {atr_pct:.2f}% < 4%")
             if volume_dryup:
                 parts.append("volume dry-up detected")
 

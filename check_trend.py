@@ -40,16 +40,20 @@ def check_ticker(
     result = trend.validate(data)
     checks = [
         ("Close > SMA-50", result.current_close > result.sma_50),
+        ("Close > SMA-150", result.current_close > (result.sma_150 or float('inf'))),
+        ("Close > SMA-200", result.current_close > result.sma_200),
         ("SMA-50 > SMA-200", result.sma_50 > result.sma_200),
         ("SMA-50 slope > 0", result.sma_50_slope > 0),
+        ("SMA-200 slope > 0", result.sma_200_slope > 0),
     ]
-    # 200-day slope is informative but not a hard sell signal alone
-    sma200_ok = result.sma_200_slope > 0
+    if result.pct_above_low_52 is not None:
+        checks.append(
+            (">=25% above 52w low", result.pct_above_low_52 >= 25.0)
+        )
 
-    print(f"  Trend Template:")
+    print(f"  Trend Template ({sum(1 for _, ok in checks if ok)}/{len(checks)}):")
     for label, ok in checks:
         print(f"    {'✅' if ok else '❌'}  {label}")
-    print(f"    {'✅' if sma200_ok else '⚠'}  SMA-200 slope > 0  (informational)")
 
     print()
     print(f"  SMA-50  : ${result.sma_50:.2f}  (slope: {result.sma_50_slope:+.4f})")
