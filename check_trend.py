@@ -57,7 +57,15 @@ def check_ticker(
 
     print()
     print(f"  SMA-50  : ${result.sma_50:.2f}  (slope: {result.sma_50_slope:+.4f})")
-    print(f"  SMA-200 : ${result.sma_200:.2f}  (slope: {result.sma_200_slope:+.4f})")
+    print(f"  SMA-200 : ${result.sma_200:.2f}  (slope: {result.sma_200_slope:+.4f})", end="")
+    if result.sma_200_slope_2m is not None or result.sma_200_slope_3m is not None:
+        parts = []
+        if result.sma_200_slope_2m is not None:
+            parts.append(f"2mo: {result.sma_200_slope_2m:+.4f}")
+        if result.sma_200_slope_3m is not None:
+            parts.append(f"3mo: {result.sma_200_slope_3m:+.4f}")
+        print(f"  [{' | '.join(parts)}]", end="")
+    print()
     print()
 
     # --- verdict ---------------------------------------------------
