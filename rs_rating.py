@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -56,20 +55,6 @@ WINDOW_1M: int = 21
 W_6M: float = 0.50
 W_3M: float = 0.30
 W_1M: float = 0.20
-
-
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class RSResult:
-    """Result for one ticker's RS rating."""
-    ticker: str
-    rs_rank: float  # 0-99, NaN if unavailable
-    weighted_return: Optional[float] = None
-    detail: str = ""
 
 
 # ---------------------------------------------------------------------------

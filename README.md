@@ -8,7 +8,7 @@ All data is fetched live via `yfinance`. No mock data, no hardcoded prices. Ever
 
 ## What it does
 
-The engine runs **three independent filters** against every ticker and only approves trades when all three agree:
+The engine runs **four independent filters** against every ticker and only approves trades when all four agree:
 
 | Filter | What it checks | Method |
 |--------|----------------|--------|
@@ -90,7 +90,7 @@ Output:
 
 ---
 
-## How the three filters work
+## How the four filters work
 
 ### Trend Template (Minervini)
 
