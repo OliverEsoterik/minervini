@@ -7,7 +7,7 @@ Production-grade module implementing:
 
   • Module 1 — Data Ingestion & Normalization (yfinance OHLCV)
   • Module 2 — Minervini Trend Template (price > 50 SMA > 200 SMA, slope)
-  • Module 3 — Fundamental Acceleration Filter (YoY revenue/earnings)
+  • Module 3 — Minervini Fundamental Engine (5-dimension: EPS/revenue/margins)
   • Module 4 — VCP & Volatility Contraction Engine (drawdown, ATR, volume)
   • Module 5 — CAN SLIM Risk Management & Position Sizing
 
@@ -20,7 +20,7 @@ import logging
 import math
 import sys
 import warnings
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -391,7 +391,7 @@ class TrendTemplateValidator:
 
 
 # ===================================================================
-# Module 3 — Fundamental Acceleration Filter  (CAN SLIM — "A")
+# Module 3 — Minervini Fundamental Engine (5-Dimension)
 # ===================================================================
 
 
@@ -519,7 +519,8 @@ class MinerviniFundamentalEngine:
 
         dims = [eps_growth, eps_accel, rev_growth, rev_accel, margin]
         score = sum(1 for d in dims if d.passed)
-        total = sum(1 for d in dims if d.value is not None or "insufficient" not in d.detail.lower())
+        # Count dimensions where data was available (value set)
+        total = sum(1 for d in dims if d.value is not None)
 
         detail_lines = [
             f"  EPS growth:       {'✅' if eps_growth.passed else '❌'} {eps_growth.detail}",
@@ -1244,6 +1245,11 @@ class ScreeningResult:
     position_sizing: Optional[PositionSizingResult] = None
     canslim: Optional[CANSLIMProfile] = None
     approved: bool = False
+
+    @property
+    def fundamental_filter(self) -> Optional[MinerviniFundamentalResult]:
+        """Deprecated alias for minervini_fundamental. Use .minervini_fundamental instead."""
+        return self.minervini_fundamental
 
     @staticmethod
     def _to_native(v: Any) -> Any:
