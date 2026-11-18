@@ -77,6 +77,19 @@ def check_ticker(
         suggested_stop = max(close * 0.96, result.sma_50)
         print(f"  →  Suggested stop-loss: ${suggested_stop:.2f}")
 
+    # --- fundamental check --------------------------------------------
+    from vcp_momentum_engine import MinerviniFundamentalEngine
+    mf_engine = MinerviniFundamentalEngine()
+    mf_result = mf_engine.screen(ticker)
+    print(f"  Fundamental (Minervini 5-dim):")
+    print(f"    {'✅' if mf_result.eps_growth.passed else '❌'}  EPS growth:       {mf_result.eps_growth.detail}")
+    print(f"    {'✅' if mf_result.eps_acceleration.passed else '❌'}  EPS acceleration: {mf_result.eps_acceleration.detail}")
+    print(f"    {'✅' if mf_result.revenue_growth.passed else '❌'}  Rev growth:       {mf_result.revenue_growth.detail}")
+    print(f"    {'✅' if mf_result.revenue_acceleration.passed else '❌'}  Rev acceleration: {mf_result.revenue_acceleration.detail}")
+    print(f"    {'✅' if mf_result.profit_margin.passed else '❌'}  Profit margin:    {mf_result.profit_margin.detail}")
+    print(f"    Score: {mf_result.score}/{mf_result.total_dims}")
+    print()
+
 
 def main() -> None:
     """CLI entry point."""
