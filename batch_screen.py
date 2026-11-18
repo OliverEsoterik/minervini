@@ -148,15 +148,29 @@ def main() -> None:
             print(f"    Trend Template : PASS")
             print(f"    Fundamental    : PASS")
             print(f"    VCP Pattern    : DETECTED")
+
+            # ── VCP breakout level (last swing high) ───────────────
+            v = r.vcp
+            pivot = None
+            if v and v.contractions:
+                pivot = v.contractions[-1]["peak"]
+                close = ll.entry_price if ll else None
+                if close:
+                    pct_to_pivot = (pivot / close - 1) * 100
+                    pivot_note = f"(needs +{pct_to_pivot:.1f}% to clear)"
+                    print(f"    VCP Pivot      : ${pivot:.2f}  {pivot_note}")
+
             if ll:
                 print(f"    ─────────────────────────────────────────────")
-                print(f"    Entry Price    : ${ll.entry_price:.2f}")
+                print(f"    Last Close     : ${ll.entry_price:.2f}  (position sizing reference)")
                 print(f"    Stop-Loss      : ${ll.stop_loss_price:.2f}  ({((ll.stop_loss_price/ll.entry_price)-1)*100:+.1f}%)")
                 print(f"    Shares         : {ll.shares_to_buy}")
                 print(f"    Risk/Trade     : ${ll.total_risk_deployed:.0f}  ({ll.risk_pct_of_equity*100:.3f}% of equity)")
                 print(f"    CAN SLIM score : {r.canslim.overall_score}/7")
             if r.rs_rank is not None:
                 print(f"    RS Rank        : {r.rs_rank:.0f}/99")
+            if pivot:
+                print(f"    >> Enter only on a confirmed breakout above ${pivot:.2f} with volume.")
     else:
         print(f"\n  No stocks passed all three filters in this run.")
 
@@ -241,8 +255,12 @@ def main() -> None:
     print(f"{'='*72}\n")
 
     if approved:
-        print(f"  >> PRINT THIS: The {len(approved)} stocks above are ready to buy right now.")
-        print(f"     Use the price, stop-loss, and share count shown.")
+        print(f"  >> Found {len(approved)} VCP setups. Review the pivot levels above.")
+        for r in approved:
+            v = r.vcp
+            pivot = v.contractions[-1]["peak"] if v and v.contractions else None
+            if pivot:
+                print(f"     {r.ticker}: buy on breakout above ${pivot:.2f}")
     else:
         if near_miss_ff:
             print(f"  >> The near-misses with TT+VCP pass are your best candidates.")
